@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { coordinate } from "./coordinator";
-import { SearchHit, SearchProvider, SearchQuery } from "../types";
+import { coordinate, SearchProvider } from "./coordinator";
+import { SearchHit, SearchQuery } from "../types";
 
 function file(id: string, index: number): SearchHit {
   return { id, kind: "file", title: `F${id}.java`, detail: `src/F${id}.java`, source: { type: "workspace" }, extension: ".java", stableIndex: index };
