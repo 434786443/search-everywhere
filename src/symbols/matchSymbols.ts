@@ -2,7 +2,7 @@ import { hitMatches, rankHits } from "../rank/rankHits";
 import { SearchHit, SearchQuery } from "../types";
 
 export interface WorkspaceSymbolInput { name: string; detail: string; uri: string; line: number; extension: string; }
-export interface DependencyClassInput { simpleName: string; detail: string; jarPath: string; jarName: string; entry: string; }
+export interface DependencyClassInput { simpleName: string; detail: string; jarPath: string; jarName: string; entry: string; annotation?: boolean; }
 
 export function matchWorkspaceSymbols(symbols: WorkspaceSymbolInput[], query: SearchQuery): SearchHit[] {
   if (query.terms.length === 0) return [];
@@ -27,11 +27,12 @@ export function matchDependencyClasses(classes: Iterable<DependencyClassInput>, 
     const hit: SearchHit = {
       id: `jar-class:${item.jarPath}!${item.entry}`,
       kind: "symbol",
-      title: item.simpleName,
+      title: item.annotation ? `@${item.simpleName}` : item.simpleName,
       detail: item.detail,
       source: { type: "jar", jarPath: item.jarPath, jarName: item.jarName },
       extension: ".class",
       treatAsJava: true,
+      annotation: item.annotation,
       stableIndex,
       entry: item.entry,
     };

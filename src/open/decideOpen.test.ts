@@ -16,4 +16,11 @@ test("open decisions", () => {
   }), { type: "jar-text", jarPath: "/a-sources.jar", entry: "com/foo/Outer.java", line: 2 });
   assert.deepEqual(decideOpen({ hit: base({ kind: "symbol", source: { type: "jar", jarPath: "/a.jar" }, entry: "com/foo/User.class" }) }), { type: "declaration", jarPath: "/a.jar", entry: "com/foo/User.class" });
   assert.deepEqual(decideOpen({ hit: base({ kind: "command", detail: "workbench.action.quickOpen" }) }), { type: "command", commandId: "workbench.action.quickOpen" });
+  const annotation = decideOpen({
+    hit: base({ kind: "symbol", title: "@Service", annotation: true, source: { type: "jar", jarPath: "/a.jar" }, entry: "org/Service.class" }),
+    sourcesJarPath: "/a-sources.jar",
+    sourceText: "public @interface Service {}\n",
+  });
+  assert.equal(annotation.type, "jar-text");
+  if (annotation.type === "jar-text") assert.equal(annotation.line, 1);
 });

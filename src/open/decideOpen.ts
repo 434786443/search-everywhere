@@ -13,7 +13,7 @@ export function decideOpen(input: { hit: SearchHit; sourcesJarPath?: string; sou
   if (hit.source.type === "workspace") return { type: "workspace", uri: hit.uri ?? "", line: hit.line };
   if (hit.kind === "content" && hit.entry) return { type: "jar-text", jarPath: input.sourcesJarPath ?? hit.source.jarPath ?? "", entry: hit.entry, line: hit.line };
   if (input.sourceText && input.sourcesJarPath && hit.entry) {
-    const line = findDeclarationLine(input.sourceText, hit.title);
+    const line = findDeclarationLine(input.sourceText, hit.title.replace(/^@/, ""));
     return { type: "jar-text", jarPath: input.sourcesJarPath, entry: classEntryToSourceEntry(hit.entry), ...(line === undefined ? {} : { line }) };
   }
   return { type: "declaration", jarPath: hit.source.jarPath ?? "", entry: hit.entry ?? "" };

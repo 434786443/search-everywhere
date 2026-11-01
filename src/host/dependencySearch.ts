@@ -77,6 +77,7 @@ export function dependencySymbolHits(jars: IndexedJar[], query: SearchQuery, lim
         yield {
           simpleName: item.simpleName,
           detail: item.binaryName,
+          annotation: item.annotation,
           jarPath: jar.jarPath,
           jarName: basename(jar.jarPath),
           entry: item.entry,
@@ -96,7 +97,7 @@ export function dependencyContentHits(jars: IndexedJar[], query: SearchQuery): S
         for (let index = 0; index < lines.length; index += 1) {
           const line = lines[index];
           const lower = line.toLowerCase();
-          if (!terms.every(term => lower.includes(term))) continue;
+          if (!terms.every(term => term === "@" ? /@[A-Za-z_]/.test(line) : lower.includes(term))) continue;
           const lineNumber = index + 1;
           hits.push({
             id: `jar-content:${jar.jarPath}!${record.entry}:${lineNumber}`,

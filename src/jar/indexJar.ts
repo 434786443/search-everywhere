@@ -4,7 +4,7 @@ import { classNameFromEntry } from "./sourcePath";
 
 export interface JarIdentity { jarPath: string; mtimeMs: number; size: number; }
 export interface SourcesIdentity { jarPath: string; mtimeMs: number; size: number; }
-export interface ClassRecord { entry: string; simpleName: string; binaryName: string; declaration: string; signaturesFailed: boolean; }
+export interface ClassRecord { entry: string; simpleName: string; binaryName: string; declaration: string; signaturesFailed: boolean; annotation?: boolean; }
 export interface TextRecord { entry: string; text: string; truncated: boolean; }
 export interface PathRecord { entry: string; truncated: boolean; }
 export interface IndexedJar extends JarIdentity {
@@ -38,7 +38,7 @@ export function indexJarEntries(input: IndexJarInput): IndexedJar {
       try {
         const info = parseClassFile(entry.data);
         const name = classNameFromEntry(entry.name);
-        classes.push({ entry: entry.name, ...name, declaration: formatDeclaration(info), signaturesFailed: false });
+        classes.push({ entry: entry.name, ...name, declaration: formatDeclaration(info), signaturesFailed: false, annotation: (info.access & 0x2000) !== 0 });
       } catch {
         const name = classNameFromEntry(entry.name);
         const pkg = name.binaryName.includes(".") ? name.binaryName.slice(0, name.binaryName.lastIndexOf(".")) : "";
