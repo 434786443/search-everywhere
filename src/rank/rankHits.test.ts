@@ -58,5 +58,28 @@ test("multiple terms have no exact tier", () => {
     hit({ id: "loose", kind: "file", title: "xxUserYYService.java", stableIndex: 0 }),
     hit({ id: "joined", kind: "file", title: "UserService.java", stableIndex: 1 }),
   ], { terms: ["User", "Service"], extensions: [] });
-  assert.deepEqual(ranked.map(item => item.id), ["loose", "joined"]);
+  assert.deepEqual(ranked.map(item => item.id), ["joined", "loose"]);
+});
+
+test("uppercase pattern matches camel humps only", () => {
+  const ranked = rankHits([
+    hit({ id: "lowercase", kind: "file", title: "userservice.java" }),
+    hit({ id: "camel", kind: "file", title: "UserService.java" }),
+  ], { terms: ["US"], extensions: [] });
+  assert.deepEqual(ranked.map(item => item.id), ["camel"]);
+});
+
+test("camel-hump match at the start ranks first", () => {
+  const ranked = rankHits([
+    hit({ id: "prefixed", kind: "file", title: "AUserServiceExtra.java", stableIndex: 0 }),
+    hit({ id: "start", kind: "file", title: "UserService.java", stableIndex: 1 }),
+  ], { terms: ["US"], extensions: [] });
+  assert.deepEqual(ranked.map(item => item.id), ["start", "prefixed"]);
+});
+
+test("lowercase pattern matches camel humps", () => {
+  const ranked = rankHits([
+    hit({ id: "camel", kind: "file", title: "UserService.java" }),
+  ], { terms: ["us"], extensions: [] });
+  assert.deepEqual(ranked.map(item => item.id), ["camel"]);
 });

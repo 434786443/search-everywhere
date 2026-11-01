@@ -12,31 +12,98 @@ function stripExt(fileName: string): string {
   return dot <= 0 ? fileName : fileName.slice(0, dot);
 }
 
-function tierFor(hit: SearchHit, query: SearchQuery): 0 | 1 | 2 | undefined {
-  if (!matchesExtension(hit, query.extensions)) return undefined;
-  const terms = query.terms.map(term => term.toLowerCase());
-  if (terms.length === 0) return 2;
-  if (hit.kind === "content") {
-    const preview = (hit.preview ?? "").toLowerCase();
-    return terms.every(term => preview.includes(term)) ? 2 : undefined;
+function isWordStart(value: string, index: number): boolean {
+  if (index === 0) return true;
+  const previous = value[index - 1];
+  const current = value[index];
+  return (/[a-z]/i.test(current) && !/[a-z0-9]/i.test(previous))
+    || (/[a-z]/.test(previous) && /[A-Z]/.test(current));
+}
+
+function characterMatches(patternCharacter: string, valueCharacter: string): boolean {
+  if (/[A-Z]/.test(patternCharacter)) return patternCharacter === valueCharacter;
+  return patternCharacter.toLowerCase() === valueCharacter.toLowerCase();
+}
+
+function matchedPositions(pattern: string, value: string): number[] | undefined {
+  const memo = new Map<string, number[] | undefined>();
+  const search = (patternIndex: number, after: number): number[] | undefined => {
+    if (patternIndex === pattern.length) return [];
+    const key = `${patternIndex}:${after}`;
+    if (memo.has(key)) return memo.get(key);
+    const candidates: number[] = [];
+    for (let index = after + 1; index < value.length; index += 1) {
+      if (characterMatches(pattern[patternIndex], value[index])) candidates.push(index);
+    }
+    candidates.sort((left, right) =>
+      Number(isWordStart(value, right)) - Number(isWordStart(value, left)) || left - right);
+    for (const index of candidates) {
+      const suffix = search(patternIndex + 1, index);
+      if (suffix) {
+        const result = [index, ...suffix];
+        memo.set(key, result);
+        return result;
+      }
+    }
+    memo.set(key, undefined);
+    return undefined;
+  };
+  return search(0, -1);
+}
+
+function degree(pattern: string, value: string): number | undefined {
+  if (pattern.length === 0) return 0;
+  const positions = matchedPositions(pattern, value);
+  if (!positions) return undefined;
+
+  const fragmentStarts = positions.filter((position, index) =>
+    index === 0 || position !== positions[index - 1] + 1);
+  let score = pattern.length * 10 - (value.length - pattern.length);
+  if (fragmentStarts[0] === 0) score += 10000;
+  score += fragmentStarts.filter(position => position !== 0 && isWordStart(value, position)).length * 1000;
+  if (value.toLowerCase() === pattern.toLowerCase()
+    && [...pattern].every((character, index) => !/[A-Z]/.test(character) || /[A-Z]/.test(value[index]))) {
+    score += 1000000;
   }
-  const fields = [hit.title, stripExt(hit.title), hit.detail].map(value => value.toLowerCase());
-  if (terms.length === 1) {
-    const term = terms[0];
-    if (hit.kind === "file" || hit.kind === "symbol") {
-      if (hit.title.toLowerCase() === term || stripExt(hit.title).toLowerCase() === term) return 0;
-      if (stripExt(hit.title).toLowerCase().startsWith(term)) return 1;
-    } else if (fields.some(field => field === term)) return 0;
-    else if (fields.some(field => field.startsWith(term))) return 1;
+  return score;
+}
+
+function scoreFor(hit: SearchHit, terms: string[]): number | undefined {
+  let score = 0;
+  for (const term of terms) {
+    if (hit.kind === "command") {
+      const best = Math.max(degree(term, hit.title) ?? -Infinity, degree(term, hit.detail) ?? -Infinity);
+      if (best === -Infinity) return undefined;
+      score += best;
+      continue;
+    }
+
+    const candidates = [
+      { degree: degree(term, hit.title), name: true },
+      { degree: degree(term, stripExt(hit.title)), name: true },
+      { degree: degree(term, hit.detail), name: false },
+    ].filter((candidate): candidate is { degree: number; name: boolean } => candidate.degree !== undefined);
+    if (candidates.length === 0) return undefined;
+    const best = candidates.reduce((current, candidate) =>
+      candidate.degree > current.degree ? candidate : current);
+    score += best.degree + (best.name ? 5000 : 0);
   }
-  return terms.every(term => fields.some(field => field.includes(term))) ? 2 : undefined;
+  return score;
 }
 
 export function rankHits(hits: SearchHit[], query: SearchQuery): SearchHit[] {
+  const terms = query.terms;
   return hits
-    .map(hit => ({ hit, tier: tierFor(hit, query) }))
-    .filter((item): item is { hit: SearchHit; tier: 0 | 1 | 2 } => item.tier !== undefined)
-    .sort((a, b) => a.tier - b.tier
+    .filter(hit => matchesExtension(hit, query.extensions))
+    .map(hit => {
+      if (hit.kind === "content") {
+        const preview = (hit.preview ?? "").toLowerCase();
+        return { hit, score: terms.every(term => preview.includes(term.toLowerCase())) ? 0 : undefined };
+      }
+      return { hit, score: scoreFor(hit, terms) };
+    })
+    .filter((item): item is { hit: SearchHit; score: number } => item.score !== undefined)
+    .sort((a, b) => (a.hit.kind === "content" && b.hit.kind === "content" ? 0 : b.score - a.score)
       || (a.hit.source.type === "workspace" ? 0 : 1) - (b.hit.source.type === "workspace" ? 0 : 1)
       || a.hit.stableIndex - b.hit.stableIndex)
     .map(item => item.hit);

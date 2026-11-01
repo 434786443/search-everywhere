@@ -58,6 +58,26 @@ test("content failure keeps file hits", async () => {
   assert.equal(result.content.hits.length, 0);
 });
 
+test("content starts while file search is pending", async () => {
+  let releaseFiles!: (hits: SearchHit[]) => void;
+  const filesPending = new Promise<SearchHit[]>(resolve => { releaseFiles = resolve; });
+  let contentStarted = false;
+  const resultPending = coordinate({
+    query, tab: "all", includeContent: true, isStale: () => false,
+    providers: {
+      files: { search: async () => filesPending },
+      symbols: provider([]),
+      commands: provider([]),
+      content: { search: async () => { contentStarted = true; return []; } },
+    },
+  });
+
+  await new Promise<void>(resolve => setImmediate(resolve));
+  assert.equal(contentStarted, true);
+  releaseFiles([]);
+  await resultPending;
+});
+
 test("extension mask skips the command provider", async () => {
   let called = false;
   const commands: SearchProvider = { search: async () => { called = true; return []; } };

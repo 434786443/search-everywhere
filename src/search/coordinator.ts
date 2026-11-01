@@ -37,15 +37,22 @@ export async function coordinate(input: CoordinateInput): Promise<GroupedResults
   const wantSymbols = tab === "all" || tab === "symbols";
   const wantCommands = (tab === "all" || tab === "commands") && query.extensions.length === 0 && query.terms.length > 0;
   const wantContent = input.includeContent && query.terms.length > 0 && (tab === "all" || tab === "files");
-  const files = wantFiles ? await input.providers.files.search(query) : [];
-  const symbols = wantSymbols ? await input.providers.symbols.search(query) : [];
-  const commands = wantCommands ? await input.providers.commands.search(query) : [];
-  let content: SearchHit[] = [];
+  const filesPromise = wantFiles ? input.providers.files.search(query) : Promise.resolve([]);
+  const symbolsPromise = wantSymbols ? input.providers.symbols.search(query) : Promise.resolve([]);
+  const commandsPromise = wantCommands ? input.providers.commands.search(query) : Promise.resolve([]);
   let contentFailed = false;
-  if (wantContent) {
-    try { content = await input.providers.content.search(query); }
-    catch { contentFailed = true; }
-  }
+  const contentPromise = wantContent
+    ? input.providers.content.search(query).catch(() => {
+      contentFailed = true;
+      return [];
+    })
+    : Promise.resolve([]);
+  const [files, symbols, commands, content] = await Promise.all([
+    filesPromise,
+    symbolsPromise,
+    commandsPromise,
+    contentPromise,
+  ]);
   if (input.isStale()) return emptyResults(true);
   return {
     stale: false,
