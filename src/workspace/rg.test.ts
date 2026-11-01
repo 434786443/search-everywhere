@@ -17,6 +17,20 @@ test("content args require every term and the extension glob", () => {
   assert.ok(args.includes("!**/target"));
 });
 
+test("annotation queries search java files for the annotation token", () => {
+  const args = contentRgArgs({ terms: ["@Bean"], extensions: [] }, []);
+  assert.ok(args.includes("*.java"));
+  assert.ok(args.includes("!**/*.prefs"));
+  assert.ok(args.includes("(?=.*@Bean\\b).*"));
+});
+
+test("drops a single enormous content line", () => {
+  const huge = `src/eclipse/org.eclipse.jdt.ui.prefs:66:${"x".repeat(1001)}`;
+  assert.deepEqual(parseRgMatches(`${huge}\nsrc/Bean.java:3:    @Bean\n`, 10), [
+    { path: "src/Bean.java", line: 3, preview: "    @Bean" },
+  ]);
+});
+
 test("parse ripgrep lines and stop at the limit", () => {
   const parsed = parseRgMatches("src/User.java:3:class User\nsrc/Other.java:4:class User\n", 1);
   assert.deepEqual(parsed, [{ path: "src/User.java", line: 3, preview: "class User" }]);

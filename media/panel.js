@@ -65,13 +65,18 @@
         const row = document.createElement("div");
         row.className = "hit";
         row.dataset.index = String(index);
-        const preview = hit.preview ? `:${hit.line} ${hit.preview}` : "";
         const truncated = hit.textTruncated ? " 文本不完整" : "";
         const title = document.createElement("div");
-        title.textContent = `${hit.title}${truncated}`;
+        fillHighlighted(title, hit.title, hit.titleRanges);
+        if (truncated) title.append(truncated);
         const meta = document.createElement("div");
         meta.className = "meta";
-        meta.textContent = `${hit.sourceLabel} ${hit.detail}${preview}`;
+        meta.append(`${hit.sourceLabel} `);
+        fillHighlighted(meta, hit.detail, hit.detailRanges);
+        if (hit.preview) {
+          meta.append(`:${hit.line} `);
+          fillHighlighted(meta, hit.preview, hit.previewRanges);
+        }
         row.append(title, meta);
         row.addEventListener("click", () => vscode.postMessage({ type: "open", id: hit.id }));
         results.appendChild(row);
@@ -86,6 +91,21 @@
     selected = 0;
     paint();
   });
+
+  function fillHighlighted(parent, text, ranges) {
+    const marks = Array.isArray(ranges) ? ranges : [];
+    let cursor = 0;
+    for (const range of marks) {
+      const start = range[0];
+      const end = range[1];
+      if (start > cursor) parent.append(text.slice(cursor, start));
+      const mark = document.createElement("mark");
+      mark.textContent = text.slice(start, end);
+      parent.append(mark);
+      cursor = end;
+    }
+    if (cursor < text.length) parent.append(text.slice(cursor));
+  }
 
   function paint() {
     results.querySelectorAll(".hit").forEach((row) => {

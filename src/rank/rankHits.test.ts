@@ -93,6 +93,32 @@ test("camel-hump match at the start ranks first", () => {
   assert.deepEqual(ranked.map(item => item.id), ["start", "prefixed"]);
 });
 
+test("@Bean matches java names without requiring a hump", () => {
+  const ranked = rankHits([
+    hit({ id: "lower", kind: "file", title: "bean.java", extension: ".java", stableIndex: 0 }),
+    hit({ id: "camel", kind: "file", title: "MyBeanConfig.java", extension: ".java", stableIndex: 1 }),
+    hit({ id: "usage", kind: "content", title: "AppConfig.java", extension: ".java", preview: "    @Bean", stableIndex: 2 }),
+    hit({ id: "javadoc", kind: "content", title: "org.eclipse.jdt.ui.prefs", extension: ".prefs", preview: "@return the field", stableIndex: 3 }),
+  ], { terms: ["@Bean"], extensions: [] });
+  assert.deepEqual(ranked.map(item => item.id), ["lower", "camel", "usage"]);
+});
+
+test("@ query ranks an annotation before a class of the same name", () => {
+  const ranked = rankHits([
+    hit({ id: "class", kind: "symbol", title: "Service", stableIndex: 0 }),
+    hit({ id: "annotation", kind: "symbol", title: "@Service", annotation: true, stableIndex: 1 }),
+  ], { terms: ["@Service"], extensions: [] });
+  assert.deepEqual(ranked.map(item => item.id), ["annotation", "class"]);
+});
+
+test("@ alone lists annotations and skips ordinary types", () => {
+  const ranked = rankHits([
+    hit({ id: "class", kind: "symbol", title: "Service" }),
+    hit({ id: "annotation", kind: "symbol", title: "@Override", annotation: true }),
+  ], { terms: ["@"], extensions: [] });
+  assert.deepEqual(ranked.map(item => item.id), ["annotation"]);
+});
+
 test("lowercase pattern matches camel humps", () => {
   const ranked = rankHits([
     hit({ id: "camel", kind: "file", title: "UserService.java" }),

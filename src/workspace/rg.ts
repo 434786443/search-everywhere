@@ -21,22 +21,34 @@ export function parseRgMatches(stdout: string, limit: number): RgMatch[] {
   const matches: RgMatch[] = [];
   for (const raw of stdout.split(/\r?\n/)) {
     const found = /^(.*?):(\d+):(.*)$/.exec(raw);
-    if (!found) continue;
-    matches.push({ path: normalizeRgPath(found[1]), line: Number(found[2]), preview: found[3] });
+    if (!found || found[3].length > MAX_CONTENT_LINE) continue;
+    const preview = found[3].length > MAX_PREVIEW ? `${found[3].slice(0, MAX_PREVIEW)}…` : found[3];
+    matches.push({ path: normalizeRgPath(found[1]), line: Number(found[2]), preview });
     if (matches.length === limit) break;
   }
   return matches;
 }
 
+const MAX_PREVIEW = 240;
+const MAX_CONTENT_LINE = 1000;
+
 function escapeRegex(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
+function contentPattern(term: string): string {
+  const escaped = escapeRegex(term);
+  return /^@[A-Za-z_][\w$]*$/.test(term) ? `${escaped}\\b` : escaped;
+}
+
 export function contentRgArgs(query: SearchQuery, excludeGlobs: string[]): string[] {
-  const pattern = query.terms.map(term => `(?=.*${escapeRegex(term)})`).join("") + ".*";
+  const annotationQuery = query.terms.some(term => term.startsWith("@"));
+  const extensions = annotationQuery && query.extensions.length === 0 ? [".java"] : query.extensions;
+  const pattern = query.terms.map(term => `(?=.*${contentPattern(term)})`).join("") + ".*";
   const globs = [
     ...excludeGlobs.flatMap(glob => ["--glob", glob]),
-    ...query.extensions.flatMap(extension => ["--glob", `*${extension}`]),
+    "--glob", "!**/*.prefs",
+    ...extensions.flatMap(extension => ["--glob", `*${extension}`]),
   ];
   return ["--pcre2", "-n", "-i", "--no-heading", "--glob", "!.git/**", ...globs, pattern, "."];
 }

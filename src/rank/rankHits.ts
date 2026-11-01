@@ -73,28 +73,45 @@ interface MatchScore {
   hasNameMatch: boolean;
 }
 
+function annotationTerm(term: string): { pattern: string; annotation: boolean } {
+  if (!term.startsWith("@")) return { pattern: term, annotation: false };
+  return { pattern: term.slice(1).toLowerCase(), annotation: true };
+}
+
+function isAnnotationHit(hit: SearchHit): boolean {
+  return Boolean(hit.annotation) || hit.title.startsWith("@") || hit.detail.includes("@interface");
+}
+
 function scoreFor(hit: SearchHit, terms: string[]): MatchScore | undefined {
   let degreeScore = 0;
   let hasNameMatch = false;
   for (const term of terms) {
+    const parsed = annotationTerm(term);
+    if (parsed.annotation && parsed.pattern.length === 0) {
+      if (!isAnnotationHit(hit)) return undefined;
+      degreeScore += 1;
+      hasNameMatch = true;
+      continue;
+    }
+    const patterns = parsed.annotation ? [parsed.pattern, term] : [term];
     if (hit.kind === "command") {
-      const best = Math.max(degree(term, hit.title) ?? -Infinity, degree(term, hit.detail) ?? -Infinity);
+      const best = Math.max(...patterns.flatMap(pattern => [degree(pattern, hit.title) ?? -Infinity, degree(pattern, hit.detail) ?? -Infinity]));
       if (best === -Infinity) return undefined;
       degreeScore += best;
       continue;
     }
 
-    const candidates = [
-      { degree: degree(term, hit.title), name: true },
-      { degree: degree(term, stripExt(hit.title)), name: true },
-      { degree: degree(term, hit.detail), name: false },
-    ].filter((candidate): candidate is { degree: number; name: boolean } => candidate.degree !== undefined);
+    const candidates = patterns.flatMap(pattern => [
+      { degree: degree(pattern, hit.title), name: true },
+      { degree: degree(pattern, stripExt(hit.title)), name: true },
+      { degree: degree(pattern, hit.detail), name: false },
+    ]).filter((candidate): candidate is { degree: number; name: boolean } => candidate.degree !== undefined);
     if (candidates.length === 0) return undefined;
     const nameCandidates = candidates.filter(candidate => candidate.name);
     const comparableCandidates = nameCandidates.length > 0 ? nameCandidates : candidates;
     const best = comparableCandidates.reduce((current, candidate) =>
       candidate.degree > current.degree ? candidate : current);
-    degreeScore += best.degree;
+    degreeScore += best.degree + (parsed.annotation && isAnnotationHit(hit) ? 2_000_000 : 0);
     hasNameMatch ||= best.name;
   }
   return { degree: degreeScore, hasNameMatch };
@@ -104,9 +121,74 @@ export function hitMatches(hit: SearchHit, query: SearchQuery): boolean {
   if (!matchesExtension(hit, query.extensions)) return false;
   if (hit.kind === "content") {
     const previewLines = (hit.preview ?? "").toLowerCase().split(/\r\n?|\n/);
-    return previewLines.some(line => query.terms.every(term => line.includes(term.toLowerCase())));
+    return previewLines.some(line => query.terms.every(term => term === "@" ? /@[A-Za-z_]/.test(line) : line.toLowerCase().includes(term.toLowerCase())));
   }
   return scoreFor(hit, query.terms) !== undefined;
+}
+
+function contiguousRanges(text: string, term: string): Array<[number, number]> {
+  const ranges: Array<[number, number]> = [];
+  const lower = text.toLowerCase();
+  const needle = term.toLowerCase();
+  let from = 0;
+  while (from <= text.length - term.length) {
+    const index = lower.indexOf(needle, from);
+    if (index < 0) break;
+    const caseMatches = [...term].every((character, offset) => !/[A-Z]/.test(character) || text[index + offset] === character);
+    if (caseMatches) {
+      ranges.push([index, index + term.length]);
+      from = index + term.length;
+    } else {
+      from = index + 1;
+    }
+  }
+  return ranges;
+}
+
+function rangesFromPositions(positions: number[]): Array<[number, number]> {
+  const ranges: Array<[number, number]> = [];
+  for (const position of positions) {
+    const last = ranges[ranges.length - 1];
+    if (last && last[1] === position) last[1] = position + 1;
+    else ranges.push([position, position + 1]);
+  }
+  return ranges;
+}
+
+function mergeRanges(ranges: Array<[number, number]>): Array<[number, number]> {
+  const sorted = [...ranges].sort((left, right) => left[0] - right[0] || left[1] - right[1]);
+  const merged: Array<[number, number]> = [];
+  for (const range of sorted) {
+    const last = merged[merged.length - 1];
+    if (last && range[0] <= last[1]) last[1] = Math.max(last[1], range[1]);
+    else merged.push([range[0], range[1]]);
+  }
+  return merged;
+}
+
+export function highlightRanges(text: string, terms: string[]): Array<[number, number]> {
+  const ranges: Array<[number, number]> = [];
+  for (const term of terms) {
+    if (term.length === 0) continue;
+    const patterns = term.startsWith("@") && term.length > 1 ? [term, term.slice(1)] : [term];
+    let matched = false;
+    for (const pattern of patterns) {
+      const contiguous = contiguousRanges(text, pattern);
+      if (contiguous.length > 0) {
+        ranges.push(...contiguous);
+        matched = true;
+        break;
+      }
+      const positions = matchedPositions(pattern, text);
+      if (positions) {
+        ranges.push(...rangesFromPositions(positions));
+        matched = true;
+        break;
+      }
+    }
+    if (!matched && term === "@" && text.startsWith("@")) ranges.push([0, 1]);
+  }
+  return mergeRanges(ranges);
 }
 
 export function rankHits(hits: SearchHit[], query: SearchQuery): SearchHit[] {

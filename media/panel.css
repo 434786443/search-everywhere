@@ -6,3 +6,5 @@ input { width: 100%; box-sizing: border-box; margin: 12px 0; padding: 8px; backg
 .hit, .note, h2 { padding: 4px 8px; }
 .hit.selected { background: var(--vscode-list-activeSelectionBackground); color: var(--vscode-list-activeSelectionForeground); }
 .meta { opacity: 0.75; }
+mark { background: var(--vscode-editor-findMatchHighlightBackground, rgba(234, 192, 64, 0.45)); color: inherit; }
+.hit.selected mark { background: var(--vscode-editor-findMatchBackground, rgba(234, 148, 32, 0.85)); }
