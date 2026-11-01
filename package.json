@@ -1,0 +1,31 @@
+{
+  "name": "search-everywhere",
+  "displayName": "Search Everywhere",
+  "publisher": "local",
+  "version": "0.0.1",
+  "engines": { "vscode": "^1.85.0" },
+  "categories": ["Other"],
+  "activationEvents": ["onStartupFinished", "onCommand:searchEverywhere.show"],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      { "command": "searchEverywhere.show", "title": "Search Everywhere: 搜索" },
+      { "command": "searchEverywhere.refreshDependencies", "title": "Search Everywhere: 刷新依赖索引" }
+    ],
+    "keybindings": [
+      { "command": "searchEverywhere.show", "key": "shift shift" }
+    ]
+  },
+  "scripts": {
+    "compile": "tsc -p .",
+    "test": "tsc -p . --pretty false && node --test \"out/**/*.test.js\""
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "@types/vscode": "^1.85.0",
+    "typescript": "^5.6.3"
+  },
+  "dependencies": {
+    "@vscode/ripgrep": "^1.15.9"
+  }
+}
