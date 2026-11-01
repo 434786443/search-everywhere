@@ -12,7 +12,7 @@ export function classNameFromEntry(classEntry: string): { simpleName: string; bi
 
 function withoutComments(source: string): string {
   const blockStripped = source.replace(/\/\*[\s\S]*?\*\//g, (comment) => comment.replace(/[^\n]/g, " "));
-  return blockStripped.replace(/\/\/.*$/gm, "");
+  return blockStripped.replace(/(?<!:)\/\/.*$/gm, "");
 }
 
 export function findDeclarationLine(source: string, simpleName: string): number | undefined {

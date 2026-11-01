@@ -16,3 +16,7 @@ test("finds the first matching declaration", () => {
   assert.equal(findDeclarationLine("int myclass;\nclass Inner {}", "Inner"), 2);
   assert.equal(findDeclarationLine("myclass Inner {}", "Inner"), undefined);
 });
+
+test("a url does not hide a declaration on the same line", () => {
+  assert.equal(findDeclarationLine('String url = "https://example.com"; class Hello {}', "Hello"), 1);
+});
