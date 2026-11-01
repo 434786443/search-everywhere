@@ -7,6 +7,8 @@ import { coordinate, GroupedResults } from "./search/coordinator";
 import { shouldPublish } from "./search/shouldPublish";
 import { parseQuery } from "./query/parseQuery";
 import { panelHtml } from "./panel/panelHtml";
+import { dependencyContentHits, dependencyFileHits, dependencySymbolHits } from "./host/dependencySearch";
+import { IndexedJar } from "./jar/indexJar";
 import { matchWorkspaceSymbols } from "./symbols/matchSymbols";
 import { SearchQuery, SearchTab } from "./types";
 import { contentRgArgs, fileRgArgs, parseRgFiles, parseRgMatches, toRgExclude } from "./workspace/rg";
@@ -16,6 +18,7 @@ let current: vscode.WebviewPanel | undefined;
 let generation = 0;
 let postedContentGeneration: number | undefined;
 let contentTimer: NodeJS.Timeout | undefined;
+let dependencyJars: IndexedJar[] = [];
 
 export function activate(context: vscode.ExtensionContext): void {
   context.subscriptions.push(vscode.commands.registerCommand("searchEverywhere.show", () => openPanel(context)));
@@ -113,16 +116,16 @@ function runRg(args: string[], cwd: string): Promise<string> {
 
 async function searchFiles(query: SearchQuery) {
   const folder = vscode.workspace.workspaceFolders?.[0];
-  if (!folder) return [];
-  const stdout = await runRg(fileRgArgs(excludeGlobs()), folder.uri.fsPath);
-  return matchFiles(parseRgFiles(stdout).map((relativePath) => ({ relativePath, uri: vscode.Uri.joinPath(folder.uri, relativePath).toString() })), query);
+  const workspaceHits = !folder ? [] : matchFiles(parseRgFiles(await runRg(fileRgArgs(excludeGlobs()), folder.uri.fsPath)).map((relativePath) => ({
+    relativePath,
+    uri: vscode.Uri.joinPath(folder.uri, relativePath).toString(),
+  })), query);
+  return [...workspaceHits, ...dependencyFileHits(dependencyJars, query)];
 }
 
 async function searchContent(query: SearchQuery) {
   const folder = vscode.workspace.workspaceFolders?.[0];
-  if (!folder) return [];
-  const stdout = await runRg(contentRgArgs(query, excludeGlobs()), folder.uri.fsPath);
-  return parseRgMatches(stdout, TAB_CAP).map((match, stableIndex) => ({
+  const workspaceHits = !folder ? [] : parseRgMatches(await runRg(contentRgArgs(query, excludeGlobs()), folder.uri.fsPath), TAB_CAP).map((match, stableIndex) => ({
     id: `content:${match.path}:${match.line}`,
     kind: "content" as const,
     title: match.path.split("/").pop() ?? match.path,
@@ -134,18 +137,20 @@ async function searchContent(query: SearchQuery) {
     extension: extensionOf(match.path),
     stableIndex,
   }));
+  return [...workspaceHits, ...dependencyContentHits(dependencyJars, query)];
 }
 
 async function searchSymbols(query: SearchQuery) {
-  if (query.terms.length === 0) return [];
+  const dependencyHits = dependencySymbolHits(dependencyJars, query);
+  if (query.terms.length === 0) return dependencyHits;
   const symbols = await vscode.commands.executeCommand<vscode.SymbolInformation[]>("vscode.executeWorkspaceSymbolProvider", query.terms.join(" "));
-  return matchWorkspaceSymbols((symbols ?? []).map((symbol) => ({
+  return [...matchWorkspaceSymbols((symbols ?? []).map((symbol) => ({
     name: symbol.name,
     detail: symbol.containerName || symbol.location.uri.path,
     uri: symbol.location.uri.toString(),
     line: symbol.location.range.start.line + 1,
     extension: extensionOf(symbol.location.uri.path),
-  })), query);
+  })), query), ...dependencyHits];
 }
 
 function readCommands(): { id: string; title?: string }[] {
