@@ -81,3 +81,19 @@ test("indexes class names and capped text from a stored and deflate zip", () => 
   assert.equal(sameJarIdentity(indexed, identity), true);
   assert.equal(sameJarIdentity(indexed, { ...identity, size: identity.size + 1 }), false);
 });
+
+test("does not mark a fully stored multi-byte UTF-8 file as truncated", () => {
+  const data = Buffer.from("你好");
+  const indexed = indexJarEntries({
+    jarPath: "/libs/app.jar",
+    mtimeMs: 10,
+    size: 1,
+    entries: [{ name: "meta/zh.txt", data }],
+    fileTextCap: FILE_TEXT_CAP,
+    jarTextCap: JAR_TEXT_CAP,
+  });
+  const text = indexed.texts.find(item => item.entry === "meta/zh.txt");
+  assert.ok(text);
+  assert.equal(text.text, "你好");
+  assert.equal(text.truncated, false);
+});

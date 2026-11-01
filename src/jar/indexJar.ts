@@ -39,11 +39,12 @@ export function indexJarEntries(input: IndexJarInput): IndexedJar {
       continue;
     }
     const room = input.jarTextCap - used;
-    const text = entry.data.subarray(0, room).toString("utf8");
-    const truncated = text.length < entry.data.length;
+    const stored = entry.data.subarray(0, room);
+    const text = stored.toString("utf8");
+    const truncated = stored.length < entry.data.length;
     texts.push({ entry: entry.name, text, truncated });
     paths.push({ entry: entry.name, truncated });
-    used += Buffer.byteLength(text);
+    used += stored.length;
   }
   return { jarPath: input.jarPath, mtimeMs: input.mtimeMs, size: input.size, classes, texts, paths };
 }
