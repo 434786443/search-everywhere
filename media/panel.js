@@ -67,7 +67,12 @@
         row.dataset.index = String(index);
         const preview = hit.preview ? `:${hit.line} ${hit.preview}` : "";
         const truncated = hit.textTruncated ? " 文本不完整" : "";
-        row.innerHTML = `<div>${hit.title}${truncated}</div><div class="meta">${hit.sourceLabel} ${hit.detail}${preview}</div>`;
+        const title = document.createElement("div");
+        title.textContent = `${hit.title}${truncated}`;
+        const meta = document.createElement("div");
+        meta.className = "meta";
+        meta.textContent = `${hit.sourceLabel} ${hit.detail}${preview}`;
+        row.append(title, meta);
         row.addEventListener("click", () => vscode.postMessage({ type: "open", id: hit.id }));
         results.appendChild(row);
       }
