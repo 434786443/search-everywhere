@@ -55,8 +55,8 @@ test("extension filter removes commands", () => {
 
 test("multiple terms have no exact tier", () => {
   const ranked = rankHits([
-    hit({ id: "joined", kind: "file", title: "UserService.java", detail: "src/UserService.java" }),
+    hit({ id: "loose", kind: "file", title: "xxUserYYService.java", stableIndex: 0 }),
+    hit({ id: "joined", kind: "file", title: "UserService.java", stableIndex: 1 }),
   ], { terms: ["User", "Service"], extensions: [] });
-  assert.equal(ranked.length, 1);
-  assert.equal(ranked[0].id, "joined");
+  assert.deepEqual(ranked.map(item => item.id), ["loose", "joined"]);
 });
