@@ -4,6 +4,7 @@ import { spawn } from "node:child_process";
 import { CONTENT_DEBOUNCE_MS, EMPTY_HINT, TAB_CAP } from "./limits";
 import { matchCommands } from "./commands/matchCommands";
 import { coordinate, GroupedResults } from "./search/coordinator";
+import { shouldPublish } from "./search/shouldPublish";
 import { parseQuery } from "./query/parseQuery";
 import { panelHtml } from "./panel/panelHtml";
 import { matchWorkspaceSymbols } from "./symbols/matchSymbols";
@@ -13,6 +14,7 @@ import { matchFiles } from "./workspace/matchFiles";
 
 let current: vscode.WebviewPanel | undefined;
 let generation = 0;
+let latestRequestId = 0;
 let contentTimer: NodeJS.Timeout | undefined;
 
 export function activate(context: vscode.ExtensionContext): void {
@@ -40,14 +42,27 @@ function openPanel(context: vscode.ExtensionContext): void {
 function schedule(text: string, tab: SearchTab): void {
   const currentGeneration = ++generation;
   if (contentTimer) clearTimeout(contentTimer);
-  void publish(text, tab, currentGeneration, false);
-  contentTimer = setTimeout(() => { void publish(text, tab, currentGeneration, true); }, CONTENT_DEBOUNCE_MS);
+  void publish(text, tab, currentGeneration, false, ++latestRequestId);
+  contentTimer = setTimeout(() => {
+    void publish(text, tab, currentGeneration, true, ++latestRequestId);
+  }, CONTENT_DEBOUNCE_MS);
 }
 
-async function publish(text: string, tab: SearchTab, currentGeneration: number, includeContent: boolean): Promise<void> {
+function currentDecision(requestId: number, requestGeneration: number) {
+  return shouldPublish({
+    requestId,
+    latestRequestId,
+    generation: requestGeneration,
+    currentGeneration: generation,
+  });
+}
+
+async function publish(text: string, tab: SearchTab, currentGeneration: number, includeContent: boolean, requestId: number): Promise<void> {
   const query = parseQuery(text);
   if (query.terms.length === 0 && query.extensions.length === 0) {
-    post({ groups: [], status: workspaceStatus(), hint: EMPTY_HINT });
+    if (currentDecision(requestId, currentGeneration)) {
+      post({ groups: [], status: workspaceStatus(), hint: EMPTY_HINT });
+    }
     return;
   }
   const result = await coordinate({
@@ -59,7 +74,7 @@ async function publish(text: string, tab: SearchTab, currentGeneration: number, 
       content: { search: (value) => searchContent(value) },
     },
   });
-  if (result.stale || currentGeneration !== generation) return;
+  if (result.stale || !currentDecision(requestId, currentGeneration)) return;
   remember(result);
   post(toPayload(result, tab));
 }
