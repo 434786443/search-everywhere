@@ -35,17 +35,19 @@ export async function refreshDependencyIndex(input: RefreshInput): Promise<Refre
     const resolved = await resolveRoot(root, input);
     logs.push(...resolved.logs);
     if (resolved.failed) failed = true;
-    else jarPaths.push(...resolved.jarPaths);
+    jarPaths.push(...resolved.jarPaths);
   }
-  if (failed) {
+  if (jarPaths.length === 0 && failed) {
     return outcome(input.previous, true, input.previous.length > 0, 0, logs);
   }
   const jars: IndexedJar[] = [];
   let unreadableCount = 0;
   for (const jarPath of classpathJars(jarPaths)) {
     const indexed = readIndexedJar(jarPath, input, logs);
-    if (indexed) jars.push(indexed);
-    else unreadableCount += 1;
+    if (indexed) {
+      jars.push(indexed.jar);
+      unreadableCount += indexed.unreadableSources;
+    } else unreadableCount += 1;
   }
   return outcome(jars, false, input.previous.length > 0, unreadableCount, logs);
 }
@@ -124,7 +126,7 @@ function classpathJars(paths: string[]): string[] {
   return unique.filter(jarPath => !unique.some(other => siblingSourcesJar(other) === jarPath));
 }
 
-function readIndexedJar(jarPath: string, input: RefreshInput, logs: string[]): IndexedJar | undefined {
+function readIndexedJar(jarPath: string, input: RefreshInput, logs: string[]): { jar: IndexedJar; unreadableSources: number } | undefined {
   if (!input.exists(jarPath)) {
     logs.push(`${jarPath}: not found`);
     return undefined;
@@ -136,7 +138,7 @@ function readIndexedJar(jarPath: string, input: RefreshInput, logs: string[]): I
   }
   const identity = { jarPath, mtimeMs: stat.mtimeMs, size: stat.size };
   const cached = input.previous.find(jar => sameJarIdentity(jar, identity));
-  if (cached) return cached;
+  if (cached) return { jar: cached, unreadableSources: 0 };
   try {
     const bytes = input.readFile(jarPath);
     if (!bytes) throw new Error("unable to read");
@@ -153,11 +155,11 @@ function readIndexedJar(jarPath: string, input: RefreshInput, logs: string[]): I
   }
 }
 
-function attachSources(indexed: IndexedJar, input: RefreshInput, logs: string[]): IndexedJar {
+function attachSources(indexed: IndexedJar, input: RefreshInput, logs: string[]): { jar: IndexedJar; unreadableSources: number } {
   const sourcesPath = siblingSourcesJar(indexed.jarPath);
-  if (!sourcesPath || !input.exists(sourcesPath)) return indexed;
+  if (!sourcesPath || !input.exists(sourcesPath)) return { jar: indexed, unreadableSources: 0 };
   const stat = input.stat(sourcesPath);
-  if (!stat) return indexed;
+  if (!stat) return { jar: indexed, unreadableSources: 0 };
   try {
     const bytes = input.readFile(sourcesPath);
     if (!bytes) throw new Error("unable to read");
@@ -169,10 +171,10 @@ function attachSources(indexed: IndexedJar, input: RefreshInput, logs: string[])
       fileTextCap: input.fileTextCap,
       jarTextCap: input.jarTextCap,
     });
-    return { ...indexed, texts: [...indexed.texts, ...sources.texts] };
+    return { jar: { ...indexed, texts: [...indexed.texts, ...sources.texts] }, unreadableSources: 0 };
   } catch (error) {
     logs.push(`${sourcesPath}: ${errorMessage(error)}`);
-    return indexed;
+    return { jar: indexed, unreadableSources: 1 };
   }
 }
 

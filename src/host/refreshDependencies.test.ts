@@ -129,6 +129,56 @@ test("runs gradle for settings.gradle.kts and for gradlew", async () => {
   assert.equal(withWrapper.failed, false);
 });
 
+test("indexes jars from a root that resolved when another root times out", async () => {
+  const outcome = await refreshDependencyIndex(baseInput({
+    workspaceRoots: ["/ok", "/bad"],
+    exists: (filePath) => filePath === "/ok/pom.xml" || filePath === "/bad/pom.xml" || filePath === "/repo/ok.jar",
+    which: (command) => command === "mvn",
+    stat: (filePath) => filePath === "/repo/ok.jar" ? { mtimeMs: 7, size: ZIP.length } : undefined,
+    readFile: (filePath) => filePath === "/repo/ok.jar" ? ZIP : undefined,
+    run: async (call) => {
+      if (call.cwd === "/bad") return { timedOut: true, code: null, stdout: "", stderr: "" };
+      return ok("/repo/ok.jar");
+    },
+  }));
+  assert.equal(outcome.failed, false);
+  assert.equal(outcome.jars.length, 1);
+  assert.equal(outcome.jars[0].jarPath, "/repo/ok.jar");
+  assert.match(outcome.log, /timed out/);
+});
+
+test("keeps gradle jars when maven on the same root times out", async () => {
+  const outcome = await refreshDependencyIndex(baseInput({
+    exists: (filePath) => filePath === "/app/pom.xml" || filePath === "/app/build.gradle" || filePath === "/repo/ok.jar",
+    which: (command) => command === "mvn" || command === "gradle",
+    stat: (filePath) => filePath === "/repo/ok.jar" ? { mtimeMs: 9, size: ZIP.length } : undefined,
+    readFile: (filePath) => filePath === "/repo/ok.jar" ? ZIP : undefined,
+    run: async (call) => {
+      if (call.command === "mvn") return { timedOut: true, code: null, stdout: "", stderr: "" };
+      return ok("JAR\t/repo/ok.jar\n");
+    },
+  }));
+  assert.equal(outcome.failed, false);
+  assert.equal(outcome.jars.length, 1);
+  assert.equal(outcome.jars[0].jarPath, "/repo/ok.jar");
+  assert.match(outcome.log, /timed out/);
+});
+
+test("counts an unreadable sources jar and keeps the binary jar", async () => {
+  const outcome = await refreshDependencyIndex(baseInput({
+    exists: (filePath) => filePath === "/app/pom.xml" || filePath === "/repo/a.jar" || filePath === "/repo/a-sources.jar",
+    which: (command) => command === "mvn",
+    stat: (filePath) => filePath === "/repo/a.jar" || filePath === "/repo/a-sources.jar" ? { mtimeMs: 8, size: 9 } : undefined,
+    readFile: (filePath) => filePath === "/repo/a.jar" ? ZIP : Buffer.from("not a zip"),
+    run: async () => ok("/repo/a.jar"),
+  }));
+  assert.equal(outcome.failed, false);
+  assert.equal(outcome.jars.length, 1);
+  assert.equal(outcome.jars[0].jarPath, "/repo/a.jar");
+  assert.equal(outcome.unreadableCount, 1);
+  assert.match(outcome.log, /\/repo\/a-sources\.jar/);
+});
+
 test("counts a jar that cannot be unzipped and still indexes the next one", async () => {
   const outcome = await refreshDependencyIndex(baseInput({
     exists: (filePath) => filePath === "/app/pom.xml" || filePath === "/repo/bad.jar" || filePath === "/repo/a.jar",

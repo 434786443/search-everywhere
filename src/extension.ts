@@ -385,7 +385,7 @@ async function openHit(id: string): Promise<void> {
     const hasClass = opened?.classes.some(item => item.entry === openedEntry) ?? false;
     const scheme = plan.type === "jar-text" || (hasText && !hasClass) ? "se-jar" : "se-decl";
     const document = await vscode.workspace.openTextDocument(virtualUri(scheme, jarPath, openedEntry));
-    await vscode.languages.setTextDocumentLanguage(document, languageIdFor(openedEntry));
+    await vscode.languages.setTextDocumentLanguage(document, languageIdFor(scheme, openedEntry));
     await showDocument(document, line);
   } catch (error) {
     void vscode.window.showErrorMessage(String(error));
@@ -430,7 +430,8 @@ function parseVirtualUri(uri: vscode.Uri): { jarPath: string; entry: string } {
   };
 }
 
-function languageIdFor(entry: string): string {
+function languageIdFor(scheme: "se-jar" | "se-decl", entry: string): string {
+  if (scheme === "se-decl") return "java";
   const lower = entry.toLowerCase();
   if (lower.endsWith(".java")) return "java";
   if (lower.endsWith(".xml")) return "xml";
