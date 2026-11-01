@@ -68,13 +68,19 @@ function degree(pattern: string, value: string): number | undefined {
   return score;
 }
 
-function scoreFor(hit: SearchHit, terms: string[]): number | undefined {
-  let score = 0;
+interface MatchScore {
+  degree: number;
+  hasNameMatch: boolean;
+}
+
+function scoreFor(hit: SearchHit, terms: string[]): MatchScore | undefined {
+  let degreeScore = 0;
+  let hasNameMatch = false;
   for (const term of terms) {
     if (hit.kind === "command") {
       const best = Math.max(degree(term, hit.title) ?? -Infinity, degree(term, hit.detail) ?? -Infinity);
       if (best === -Infinity) return undefined;
-      score += best;
+      degreeScore += best;
       continue;
     }
 
@@ -84,11 +90,14 @@ function scoreFor(hit: SearchHit, terms: string[]): number | undefined {
       { degree: degree(term, hit.detail), name: false },
     ].filter((candidate): candidate is { degree: number; name: boolean } => candidate.degree !== undefined);
     if (candidates.length === 0) return undefined;
-    const best = candidates.reduce((current, candidate) =>
+    const nameCandidates = candidates.filter(candidate => candidate.name);
+    const comparableCandidates = nameCandidates.length > 0 ? nameCandidates : candidates;
+    const best = comparableCandidates.reduce((current, candidate) =>
       candidate.degree > current.degree ? candidate : current);
-    score += best.degree + (best.name ? 5000 : 0);
+    degreeScore += best.degree;
+    hasNameMatch ||= best.name;
   }
-  return score;
+  return { degree: degreeScore, hasNameMatch };
 }
 
 export function rankHits(hits: SearchHit[], query: SearchQuery): SearchHit[] {
@@ -98,12 +107,18 @@ export function rankHits(hits: SearchHit[], query: SearchQuery): SearchHit[] {
     .map(hit => {
       if (hit.kind === "content") {
         const preview = (hit.preview ?? "").toLowerCase();
-        return { hit, score: terms.every(term => preview.includes(term.toLowerCase())) ? 0 : undefined };
+        return {
+          hit,
+          score: terms.every(term => preview.includes(term.toLowerCase()))
+            ? { degree: 0, hasNameMatch: false }
+            : undefined,
+        };
       }
       return { hit, score: scoreFor(hit, terms) };
     })
-    .filter((item): item is { hit: SearchHit; score: number } => item.score !== undefined)
-    .sort((a, b) => (a.hit.kind === "content" && b.hit.kind === "content" ? 0 : b.score - a.score)
+    .filter((item): item is { hit: SearchHit; score: MatchScore } => item.score !== undefined)
+    .sort((a, b) => (a.hit.kind === "content" && b.hit.kind === "content" ? 0
+      : Number(b.score.hasNameMatch) - Number(a.score.hasNameMatch) || b.score.degree - a.score.degree)
       || (a.hit.source.type === "workspace" ? 0 : 1) - (b.hit.source.type === "workspace" ? 0 : 1)
       || a.hit.stableIndex - b.hit.stableIndex)
     .map(item => item.hit);

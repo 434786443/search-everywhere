@@ -58,6 +58,16 @@ test("content failure keeps file hits", async () => {
   assert.equal(result.content.hits.length, 0);
 });
 
+test("synchronous content failure keeps file hits", async () => {
+  const content: SearchProvider = { search: () => { throw new Error("sync"); } };
+  const result = await coordinate({
+    query, tab: "all", includeContent: true, isStale: () => false,
+    providers: { files: provider([file("1", 0)]), symbols: provider([]), commands: provider([]), content },
+  });
+  assert.equal(result.contentFailed, true);
+  assert.deepEqual(result.files.hits.map(item => item.id), ["1"]);
+});
+
 test("content starts while file search is pending", async () => {
   let releaseFiles!: (hits: SearchHit[]) => void;
   const filesPending = new Promise<SearchHit[]>(resolve => { releaseFiles = resolve; });

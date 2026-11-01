@@ -41,12 +41,17 @@ export async function coordinate(input: CoordinateInput): Promise<GroupedResults
   const symbolsPromise = wantSymbols ? input.providers.symbols.search(query) : Promise.resolve([]);
   const commandsPromise = wantCommands ? input.providers.commands.search(query) : Promise.resolve([]);
   let contentFailed = false;
-  const contentPromise = wantContent
-    ? input.providers.content.search(query).catch(() => {
+  let contentPromise: Promise<SearchHit[]> = Promise.resolve([]);
+  if (wantContent) {
+    try {
+      contentPromise = input.providers.content.search(query).catch(() => {
+        contentFailed = true;
+        return [];
+      });
+    } catch {
       contentFailed = true;
-      return [];
-    })
-    : Promise.resolve([]);
+    }
+  }
   const [files, symbols, commands, content] = await Promise.all([
     filesPromise,
     symbolsPromise,

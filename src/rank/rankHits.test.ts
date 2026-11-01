@@ -21,6 +21,14 @@ test("exact file name beats prefix", () => {
   assert.deepEqual(ranked.map(item => item.id), ["exact", "prefix"]);
 });
 
+test("name match beats an exact path-only match", () => {
+  const ranked = rankHits([
+    hit({ id: "path", kind: "file", title: "Notes.java", detail: "User", stableIndex: 0 }),
+    hit({ id: "name", kind: "file", title: "UserHelper.java", detail: "src/other.txt", stableIndex: 1 }),
+  ], { terms: ["User"], extensions: [] });
+  assert.deepEqual(ranked.map(item => item.id), ["name", "path"]);
+});
+
 test("workspace beats jar at the same tier", () => {
   const ranked = rankHits([
     hit({ id: "jar", kind: "file", title: "User.java", source: { type: "jar", jarName: "a.jar" }, stableIndex: 0 }),
