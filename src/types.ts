@@ -23,7 +23,10 @@ export interface SearchHit {
   preview?: string;
   extension: string;
   treatAsJava?: boolean;
+  annotation?: boolean;
   textTruncated?: boolean;
   stableIndex: number;
   entry?: string;
+  /** Match ranges inside `title`, when the matcher supplied indices. */
+  titleRanges?: Array<[number, number]>;
 }

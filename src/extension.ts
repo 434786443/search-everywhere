@@ -11,16 +11,19 @@ import { dependencyContentHits, dependencyFileHits, dependencySymbolHits } from 
 import { IndexedJar } from "./jar/indexJar";
 import { readPersistedJars, writePersistedJars } from "./jar/persistIndex";
 import { classEntryToSourceEntry } from "./jar/sourcePath";
-import { ALL_GROUP_CAP, CONTENT_DEBOUNCE_MS, EMPTY_HINT, FILE_TEXT_CAP, JAR_TEXT_CAP, REBUILD_DEBOUNCE_MS, TAB_CAP } from "./limits";
+import { ALL_GROUP_CAP, CONTENT_DEBOUNCE_MS, EMPTY_HINT, FILE_INDEX_DEBOUNCE_MS, FILE_TEXT_CAP, JAR_TEXT_CAP, REBUILD_DEBOUNCE_MS, TAB_CAP } from "./limits";
 import { decideOpen } from "./open/decideOpen";
 import { createPanelNonce, panelHtml } from "./panel/panelHtml";
-import { parseQuery } from "./query/parseQuery";
+import { FileQueryInput, parseFileQuery } from "./query/fileQuery";
+import { highlightRanges } from "./rank/rankHits";
 import { coordinate, GroupedResults, ResultGroup } from "./search/coordinator";
 import { shouldPublish } from "./search/shouldPublish";
+import { FileHit, FileSearchResult, IndexedEntry, WasmFileSearch } from "./search/wasmFileSearch";
 import { IndexStatus, statusText } from "./status/statusText";
 import { matchWorkspaceSymbols } from "./symbols/matchSymbols";
 import { SearchHit, SearchQuery, SearchTab } from "./types";
 import { contentRgArgs, fileRgArgs, parseRgFiles, searchContentFolders, toRgExclude } from "./workspace/rg";
+import { FolderRoot, keyFor, makeEntries, shouldFullRebuild } from "./workspace/fileIndex";
 import { matchFiles } from "./workspace/matchFiles";
 
 let current: vscode.WebviewPanel | undefined;
@@ -30,10 +33,15 @@ let postedContentGeneration: number | undefined;
 let contentTimer: NodeJS.Timeout | undefined;
 let rebuildTimer: NodeJS.Timeout | undefined;
 let dependencyJars: IndexedJar[] = [];
-let workspaceFiles: { relativePath: string; uri: string }[] = [];
-let fileIndexRunning = false;
-let fileIndexAgain = false;
+let fileSearch: WasmFileSearch | undefined;
+let fileEntries: IndexedEntry[] = [];
+let extensionContext: vscode.ExtensionContext | undefined;
+let pendingFullRebuild: NodeJS.Timeout | undefined;
+let deltaTimer: NodeJS.Timeout | undefined;
+const pendingUpserts = new Set<string>();
+const pendingDeletes = new Set<string>();
 let storageDirectory: string | undefined;
+let recentKeys: string[] = [];
 let indexStatus = statusText({ hasFolder: false, updating: false, failed: false, hasPreviousIndex: false, unreadableCount: 0 });
 let output: vscode.OutputChannel | undefined;
 let initScriptPath = "";
@@ -57,6 +65,7 @@ const lastHits = new Map<string, SearchHit>();
 
 export function activate(context: vscode.ExtensionContext): void {
   output = vscode.window.createOutputChannel("Search Everywhere");
+  extensionContext = context;
   initScriptPath = path.join(context.extensionPath, "src", "classpath", "gradle-classpath.init.gradle");
   storageDirectory = context.storageUri?.fsPath;
   context.subscriptions.push(output);
@@ -73,68 +82,144 @@ export function activate(context: vscode.ExtensionContext): void {
   }));
   watchRebuildFiles(context);
   watchWorkspaceFiles(context);
+  void bootFileSearch(context);
   void boot();
 }
 
 export function deactivate(): void {
   if (rebuildTimer) clearTimeout(rebuildTimer);
   if (contentTimer) clearTimeout(contentTimer);
+  if (pendingFullRebuild) clearTimeout(pendingFullRebuild);
+  if (deltaTimer) clearTimeout(deltaTimer);
   generation += 1;
   current?.dispose();
 }
 
+async function bootFileSearch(context: vscode.ExtensionContext): Promise<void> {
+  fileSearch = await WasmFileSearch.load(path.join(context.extensionPath, "vendor", "wasm"), (message) => appendLog(message));
+  scheduleFileIndex();
+}
+
 async function boot(): Promise<void> {
   dependencyJars = await readPersistedJars(storageDirectory);
-  scheduleFileIndex();
   await refreshDependencies();
+}
+
+function folderRoots(): FolderRoot[] {
+  return (vscode.workspace.workspaceFolders ?? []).map((folder) => ({ name: folder.name, fsPath: folder.uri.fsPath }));
+}
+
+/** Index key for an absolute path, or undefined when the path is outside every folder. */
+function keyForPath(fsPath: string): string | undefined {
+  const folders = folderRoots();
+  const folder = folders.find((root) => fsPath.startsWith(root.fsPath));
+  if (!folder) return undefined;
+  const relativePath = fsPath.slice(folder.fsPath.length).replace(/^[\\/]+/, "").replace(/\\/g, "/");
+  if (!relativePath) return undefined;
+  return keyFor(folder, relativePath, folders.length <= 1);
 }
 
 function watchWorkspaceFiles(context: vscode.ExtensionContext): void {
   const watcher = vscode.workspace.createFileSystemWatcher("**/*");
-  const onRename = () => scheduleFileIndex();
   context.subscriptions.push(
     watcher,
-    watcher.onDidCreate(() => scheduleFileIndex()),
-    watcher.onDidDelete(() => scheduleFileIndex()),
+    watcher.onDidCreate((uri) => scheduleFileDelta(uri.fsPath, false)),
+    watcher.onDidDelete((uri) => scheduleFileDelta(uri.fsPath, true)),
     watcher.onDidChange((uri) => {
       const normalized = uri.path.replace(/\\/g, "/");
       if (normalized.endsWith("/.gitignore") || normalized.endsWith("/.git/info/exclude")) scheduleFileIndex();
     }),
-    vscode.workspace.onDidRenameFiles(onRename),
+    vscode.workspace.onDidRenameFiles((event) => {
+      for (const file of event.files) {
+        scheduleFileDelta(file.oldUri.fsPath, true);
+        scheduleFileDelta(file.newUri.fsPath, false);
+      }
+    }),
   );
 }
 
+/** Coalesces the events that change the whole file list into one rescan. */
 function scheduleFileIndex(): void {
-  fileIndexAgain = true;
-  if (fileIndexRunning) return;
-  fileIndexRunning = true;
-  void (async () => {
-    try {
-      while (fileIndexAgain) {
-        fileIndexAgain = false;
-        await rebuildFileIndex();
-      }
-    } finally {
-      fileIndexRunning = false;
-      if (fileIndexAgain) scheduleFileIndex();
-    }
-  })();
+  if (pendingFullRebuild) clearTimeout(pendingFullRebuild);
+  pendingFullRebuild = setTimeout(() => {
+    pendingFullRebuild = undefined;
+    void rebuildFileIndex();
+  }, FILE_INDEX_DEBOUNCE_MS);
+}
+
+function scheduleFileDelta(fsPath: string, removed: boolean): void {
+  const key = keyForPath(fsPath);
+  if (!key) return;
+  if (removed) {
+    pendingDeletes.add(key);
+    pendingUpserts.delete(key);
+  } else {
+    pendingUpserts.add(key);
+    pendingDeletes.delete(key);
+  }
+  if (shouldFullRebuild(pendingUpserts.size + pendingDeletes.size)) {
+    pendingUpserts.clear();
+    pendingDeletes.clear();
+    scheduleFileIndex();
+    return;
+  }
+  if (deltaTimer) clearTimeout(deltaTimer);
+  deltaTimer = setTimeout(() => {
+    deltaTimer = undefined;
+    void flushFileDeltas();
+  }, FILE_INDEX_DEBOUNCE_MS);
 }
 
 async function rebuildFileIndex(): Promise<void> {
-  const folders = vscode.workspace.workspaceFolders ?? [];
-  const next: { relativePath: string; uri: string }[] = [];
+  const folders = folderRoots();
+  const filesByFolder = new Map<string, string[]>();
   for (const folder of folders) {
     try {
-      const relativePaths = parseRgFiles(await runRg(fileRgArgs(excludeGlobs()), folder.uri.fsPath));
-      for (const relativePath of relativePaths) {
-        next.push({ relativePath, uri: folderUri(folder.uri, relativePath) });
-      }
+      filesByFolder.set(folder.fsPath, parseRgFiles(await runRg(fileRgArgs(excludeGlobs()), folder.fsPath)));
     } catch {
       continue;
     }
   }
-  workspaceFiles = next;
+  fileEntries = makeEntries(folders, filesByFolder);
+  pendingUpserts.clear();
+  pendingDeletes.clear();
+  fileSearch?.setFiles(fileEntries);
+}
+
+async function flushFileDeltas(): Promise<void> {
+  if (pendingDeletes.size > 0) {
+    const keys = [...pendingDeletes];
+    pendingDeletes.clear();
+    fileEntries = fileEntries.filter((entry) => !keys.includes(entry.key));
+    fileSearch?.removeFiles(keys);
+  }
+  if (pendingUpserts.size === 0) return;
+  const keys = [...pendingUpserts];
+  pendingUpserts.clear();
+  const folders = folderRoots();
+  const single = folders.length <= 1;
+  const confirmed: IndexedEntry[] = [];
+  for (const key of keys) {
+    const folder = single ? folders[0] : folders.find((root) => key.startsWith(`${root.name}/`));
+    if (!folder) continue;
+    const relativePath = single ? key : key.slice(folder.name.length + 1);
+    let listed: string[];
+    try {
+      listed = parseRgFiles(await runRg([
+        "--files", "--hidden", "--glob", "!.git/**",
+        ...excludeGlobs().flatMap((glob) => ["--glob", glob]),
+        "--", relativePath,
+      ], folder.fsPath));
+    } catch {
+      continue;
+    }
+    if (!listed.includes(relativePath)) continue;
+    confirmed.push({ key, rel: key, library: false });
+  }
+  if (confirmed.length === 0) return;
+  const confirmedKeys = new Set(confirmed.map((entry) => entry.key));
+  fileEntries = [...fileEntries.filter((entry) => !confirmedKeys.has(entry.key)), ...confirmed];
+  fileSearch?.upsertFiles(confirmed);
 }
 
 function folderUri(folder: vscode.Uri, relativePath: string): string {
@@ -311,8 +396,9 @@ function noteContentPosted(includeContent: boolean, requestGeneration: number): 
 }
 
 async function publish(text: string, tab: SearchTab, currentGeneration: number, includeContent: boolean): Promise<QuickSnapshot | undefined> {
-  const query = parseQuery(text);
-  if (query.terms.length === 0 && query.extensions.length === 0) {
+  const query = parseFileQuery(text, folderRoots().map((root) => root.fsPath));
+  const empty = query.terms.length === 0 && query.extensions.length === 0;
+  if (empty && recentKeys.length === 0) {
     if (currentDecision(currentGeneration, includeContent)) {
       post({ groups: [], status: workspaceStatus(), hint: EMPTY_HINT });
       noteContentPosted(includeContent, currentGeneration);
@@ -337,7 +423,7 @@ async function publish(text: string, tab: SearchTab, currentGeneration: number, 
   });
   if (result.stale || !currentDecision(currentGeneration, includeContent)) return undefined;
   remember(result);
-  post(toPayload(result, tab));
+  post(toPayload(result, tab, query.terms));
   noteContentPosted(includeContent, currentGeneration);
   if (includeContent) return undefined;
   return { generation: currentGeneration, text, tab, files: result.files, symbols: result.symbols, commands: result.commands };
@@ -378,7 +464,81 @@ function runRg(args: string[], cwd: string): Promise<string> {
 }
 
 async function searchFiles(query: SearchQuery, limit: number) {
-  return [...matchFiles(workspaceFiles, query, limit), ...dependencyFileHits(dependencyJars, query, limit)];
+  const fileQuery: FileQueryInput = "text" in query ? (query as FileQueryInput) : fileQueryOf(query);
+  const dependency = dependencyFileHits(dependencyJars, fileQuery, limit);
+  if (fileQuery.terms.length === 0 && fileQuery.extensions.length > 0) {
+    const listed = fileSearch?.available
+      ? fileSearch.listByExtension(fileQuery.extensions, limit)
+      : fallbackList(fileQuery, limit);
+    return [...toWorkspaceHits(listed, fileQuery), ...dependency];
+  }
+  // A bare empty query lists recent files; the matcher ranks them by recency.
+  const found = fileSearch?.available
+    ? fileSearch.find(fileQuery.text, limit, fileQuery.extensions)
+    : fallbackFind(fileQuery, limit);
+  return [...toWorkspaceHits(found, fileQuery), ...dependency];
+}
+
+function fileQueryOf(query: SearchQuery): FileQueryInput {
+  return { ...query, text: query.terms.join(" ") };
+}
+
+/** Last-resort path when the wasm module is missing or threw. */
+function fallbackFind(query: FileQueryInput, limit: number): FileSearchResult {
+  const files = fileEntries.map((entry) => ({ relativePath: entry.rel, uri: uriFor(entry.rel) }));
+  const hits = matchFiles(files, query, limit);
+  return { hits: hits.map(toFallbackHit), total: hits.length };
+}
+
+function fallbackList(query: FileQueryInput, limit: number): FileSearchResult {
+  const files = fileEntries.map((entry) => ({ relativePath: entry.rel, uri: uriFor(entry.rel) }));
+  const hits = matchFiles(files, query, limit);
+  return { hits: hits.map(toFallbackHit), total: hits.length };
+}
+
+function toFallbackHit(hit: SearchHit): FileHit {
+  return { key: hit.detail, rel: hit.detail, score: 0, indices: [] };
+}
+
+function uriFor(rel: string): string {
+  const folders = vscode.workspace.workspaceFolders ?? [];
+  if (folders.length <= 1) return folders[0] ? folderUri(folders[0].uri, rel) : "";
+  const [name, ...rest] = rel.split("/");
+  const folder = folders.find((item) => item.name === name);
+  return folder ? folderUri(folder.uri, rest.join("/")) : "";
+}
+
+function toWorkspaceHits(result: FileSearchResult, query: FileQueryInput): SearchHit[] {
+  return result.hits.map((hit, index) => {
+    const title = hit.rel.split("/").pop() ?? hit.rel;
+    const dot = title.lastIndexOf(".");
+    return {
+      id: `file:${hit.key}`,
+      kind: "file" as const,
+      title,
+      detail: hit.rel,
+      source: { type: "workspace" as const },
+      uri: uriFor(hit.rel),
+      extension: dot <= 0 ? "" : title.slice(dot).toLowerCase(),
+      stableIndex: index,
+      ...(query.line === undefined ? {} : { line: query.line }),
+      ...(hit.indices.length === 0 ? {} : { titleRanges: rangesInTitle(hit.rel, hit.indices) }),
+    };
+  });
+}
+
+/** Char indices into `rel` mapped onto the title (the part after the last `/`). */
+function rangesInTitle(rel: string, indices: number[]): Array<[number, number]> {
+  const nameStart = rel.lastIndexOf("/") + 1;
+  const ranges: Array<[number, number]> = [];
+  for (const index of indices) {
+    if (index < nameStart) continue;
+    const start = index - nameStart;
+    const last = ranges[ranges.length - 1];
+    if (last && last[1] === start) last[1] = start + 1;
+    else ranges.push([start, start + 1]);
+  }
+  return ranges;
 }
 
 async function searchContent(query: SearchQuery) {
@@ -409,7 +569,9 @@ async function searchContent(query: SearchQuery) {
 async function searchSymbols(query: SearchQuery, limit: number) {
   const dependencyHits = dependencySymbolHits(dependencyJars, query, limit);
   if (query.terms.length === 0) return dependencyHits;
-  const symbols = await vscode.commands.executeCommand<vscode.SymbolInformation[]>("vscode.executeWorkspaceSymbolProvider", query.terms.join(" "));
+  const symbolQuery = query.terms.map(term => term.startsWith("@") ? term.slice(1) : term).filter(term => term.length > 0).join(" ");
+  if (symbolQuery.length === 0) return dependencyHits;
+  const symbols = await vscode.commands.executeCommand<vscode.SymbolInformation[]>("vscode.executeWorkspaceSymbolProvider", symbolQuery);
   return [...matchWorkspaceSymbols((symbols ?? []).map((symbol) => ({
     name: symbol.name,
     detail: symbol.containerName || symbol.location.uri.path,
@@ -442,7 +604,7 @@ function extensionOf(filePath: string): string {
   return dot <= 0 ? "" : base.slice(dot).toLowerCase();
 }
 
-function toPayload(result: GroupedResults, tab: SearchTab) {
+function toPayload(result: GroupedResults, tab: SearchTab, terms: string[]) {
   const labels: Record<string, string> = { files: "文件名", symbols: "符号", commands: "命令", content: "内容" };
   const order = ["files", "symbols", "commands", "content"] as const;
   const groups = order.map((key) => {
@@ -462,6 +624,9 @@ function toPayload(result: GroupedResults, tab: SearchTab) {
         preview: hit.preview ?? "",
         line: hit.line ?? 0,
         textTruncated: Boolean(hit.textTruncated),
+        titleRanges: hit.titleRanges ?? highlightRanges(hit.title, terms),
+        detailRanges: highlightRanges(hit.detail, terms),
+        previewRanges: highlightRanges(hit.preview ?? "", terms),
       })),
     };
   });
