@@ -9,25 +9,31 @@ import { matchCommands } from "./commands/matchCommands";
 import { refreshDependencyIndex } from "./host/refreshDependencies";
 import { dependencyContentHits, dependencyFileHits, dependencySymbolHits } from "./host/dependencySearch";
 import { IndexedJar } from "./jar/indexJar";
+import { readPersistedJars, writePersistedJars } from "./jar/persistIndex";
 import { classEntryToSourceEntry } from "./jar/sourcePath";
-import { CONTENT_DEBOUNCE_MS, EMPTY_HINT, FILE_TEXT_CAP, JAR_TEXT_CAP, REBUILD_DEBOUNCE_MS, TAB_CAP } from "./limits";
+import { ALL_GROUP_CAP, CONTENT_DEBOUNCE_MS, EMPTY_HINT, FILE_TEXT_CAP, JAR_TEXT_CAP, REBUILD_DEBOUNCE_MS, TAB_CAP } from "./limits";
 import { decideOpen } from "./open/decideOpen";
-import { panelHtml } from "./panel/panelHtml";
+import { createPanelNonce, panelHtml } from "./panel/panelHtml";
 import { parseQuery } from "./query/parseQuery";
-import { coordinate, GroupedResults } from "./search/coordinator";
+import { coordinate, GroupedResults, ResultGroup } from "./search/coordinator";
 import { shouldPublish } from "./search/shouldPublish";
 import { IndexStatus, statusText } from "./status/statusText";
 import { matchWorkspaceSymbols } from "./symbols/matchSymbols";
 import { SearchHit, SearchQuery, SearchTab } from "./types";
-import { contentRgArgs, fileRgArgs, parseRgFiles, parseRgMatches, toRgExclude } from "./workspace/rg";
+import { contentRgArgs, fileRgArgs, parseRgFiles, searchContentFolders, toRgExclude } from "./workspace/rg";
 import { matchFiles } from "./workspace/matchFiles";
 
 let current: vscode.WebviewPanel | undefined;
+let panelReady = false;
 let generation = 0;
 let postedContentGeneration: number | undefined;
 let contentTimer: NodeJS.Timeout | undefined;
 let rebuildTimer: NodeJS.Timeout | undefined;
 let dependencyJars: IndexedJar[] = [];
+let workspaceFiles: { relativePath: string; uri: string }[] = [];
+let fileIndexRunning = false;
+let fileIndexAgain = false;
+let storageDirectory: string | undefined;
 let indexStatus = statusText({ hasFolder: false, updating: false, failed: false, hasPreviousIndex: false, unreadableCount: 0 });
 let output: vscode.OutputChannel | undefined;
 let initScriptPath = "";
@@ -36,24 +42,103 @@ let refreshAgain = false;
 let refreshTail: Promise<void> = Promise.resolve();
 let lastPayload: { groups: unknown[]; status: string; hint: string } | undefined;
 
+interface QuickSnapshot {
+  generation: number;
+  text: string;
+  tab: SearchTab;
+  files: ResultGroup;
+  symbols: ResultGroup;
+  commands: ResultGroup;
+}
+
+let quickFlight: { generation: number; text: string; tab: SearchTab; done: Promise<QuickSnapshot | undefined> } | undefined;
+
 const lastHits = new Map<string, SearchHit>();
 
 export function activate(context: vscode.ExtensionContext): void {
   output = vscode.window.createOutputChannel("Search Everywhere");
   initScriptPath = path.join(context.extensionPath, "src", "classpath", "gradle-classpath.init.gradle");
+  storageDirectory = context.storageUri?.fsPath;
   context.subscriptions.push(output);
   context.subscriptions.push(vscode.workspace.registerTextDocumentContentProvider("se-jar", { provideTextDocumentContent: jarText }));
   context.subscriptions.push(vscode.workspace.registerTextDocumentContentProvider("se-decl", { provideTextDocumentContent: declarationText }));
   context.subscriptions.push(vscode.commands.registerCommand("searchEverywhere.show", () => openPanel(context)));
   context.subscriptions.push(vscode.commands.registerCommand("searchEverywhere.refreshDependencies", () => { void refreshDependencies(); }));
-  context.subscriptions.push(vscode.workspace.onDidChangeWorkspaceFolders(() => { void refreshDependencies(); }));
+  context.subscriptions.push(vscode.workspace.onDidChangeWorkspaceFolders(() => {
+    scheduleFileIndex();
+    void refreshDependencies();
+  }));
+  context.subscriptions.push(vscode.workspace.onDidChangeConfiguration((event) => {
+    if (event.affectsConfiguration("files.exclude") || event.affectsConfiguration("search.exclude")) scheduleFileIndex();
+  }));
   watchRebuildFiles(context);
-  void refreshDependencies();
+  watchWorkspaceFiles(context);
+  void boot();
 }
 
 export function deactivate(): void {
   if (rebuildTimer) clearTimeout(rebuildTimer);
+  if (contentTimer) clearTimeout(contentTimer);
+  generation += 1;
   current?.dispose();
+}
+
+async function boot(): Promise<void> {
+  dependencyJars = await readPersistedJars(storageDirectory);
+  scheduleFileIndex();
+  await refreshDependencies();
+}
+
+function watchWorkspaceFiles(context: vscode.ExtensionContext): void {
+  const watcher = vscode.workspace.createFileSystemWatcher("**/*");
+  const onRename = () => scheduleFileIndex();
+  context.subscriptions.push(
+    watcher,
+    watcher.onDidCreate(() => scheduleFileIndex()),
+    watcher.onDidDelete(() => scheduleFileIndex()),
+    watcher.onDidChange((uri) => {
+      const normalized = uri.path.replace(/\\/g, "/");
+      if (normalized.endsWith("/.gitignore") || normalized.endsWith("/.git/info/exclude")) scheduleFileIndex();
+    }),
+    vscode.workspace.onDidRenameFiles(onRename),
+  );
+}
+
+function scheduleFileIndex(): void {
+  fileIndexAgain = true;
+  if (fileIndexRunning) return;
+  fileIndexRunning = true;
+  void (async () => {
+    try {
+      while (fileIndexAgain) {
+        fileIndexAgain = false;
+        await rebuildFileIndex();
+      }
+    } finally {
+      fileIndexRunning = false;
+      if (fileIndexAgain) scheduleFileIndex();
+    }
+  })();
+}
+
+async function rebuildFileIndex(): Promise<void> {
+  const folders = vscode.workspace.workspaceFolders ?? [];
+  const next: { relativePath: string; uri: string }[] = [];
+  for (const folder of folders) {
+    try {
+      const relativePaths = parseRgFiles(await runRg(fileRgArgs(excludeGlobs()), folder.uri.fsPath));
+      for (const relativePath of relativePaths) {
+        next.push({ relativePath, uri: folderUri(folder.uri, relativePath) });
+      }
+    } catch {
+      continue;
+    }
+  }
+  workspaceFiles = next;
+}
+
+function folderUri(folder: vscode.Uri, relativePath: string): string {
+  return vscode.Uri.joinPath(folder, ...relativePath.split("/").filter(Boolean)).toString();
 }
 
 function watchRebuildFiles(context: vscode.ExtensionContext): void {
@@ -96,8 +181,10 @@ async function refreshOnce(): Promise<void> {
   }
   applyStatus({ hasFolder: true, updating: true, failed: false, hasPreviousIndex: dependencyJars.length > 0, unreadableCount: 0 });
   try {
+    const buildFiles = await findBuildFiles();
     const outcome = await refreshDependencyIndex({
       workspaceRoots: roots,
+      ...(buildFiles ? { buildFiles } : {}),
       previous: dependencyJars,
       run: runTool,
       readFile: readFileBuffer,
@@ -109,6 +196,11 @@ async function refreshOnce(): Promise<void> {
       jarTextCap: JAR_TEXT_CAP,
     });
     dependencyJars = outcome.jars;
+    try {
+      await writePersistedJars(storageDirectory, dependencyJars);
+    } catch (error) {
+      appendLog(String(error));
+    }
     appendLog(outcome.log);
     applyStatus({
       hasFolder: true,
@@ -133,8 +225,17 @@ function appendLog(text: string): void {
   output.append(text.endsWith("\n") ? text : `${text}\n`);
 }
 
-function readFileBuffer(filePath: string): Buffer | undefined {
-  try { return fs.readFileSync(filePath); }
+async function findBuildFiles(): Promise<string[] | undefined> {
+  try {
+    const found = await vscode.workspace.findFiles("**/{pom.xml,build.gradle,build.gradle.kts,settings.gradle,settings.gradle.kts}");
+    return found.map(uri => uri.fsPath);
+  } catch {
+    return undefined;
+  }
+}
+
+async function readFileBuffer(filePath: string): Promise<Buffer | undefined> {
+  try { return await fs.promises.readFile(filePath); }
   catch { return undefined; }
 }
 
@@ -160,25 +261,38 @@ function commandExists(command: string): boolean {
 
 function openPanel(context: vscode.ExtensionContext): void {
   if (current) { current.reveal(vscode.ViewColumn.Active); return; }
+  panelReady = false;
   current = vscode.window.createWebviewPanel("searchEverywhere", "Search Everywhere", vscode.ViewColumn.Active, { enableScripts: true, localResourceRoots: [vscode.Uri.joinPath(context.extensionUri, "media")] });
-  const nonce = String(Date.now());
+  const nonce = createPanelNonce();
   const scriptUri = current.webview.asWebviewUri(vscode.Uri.joinPath(context.extensionUri, "media", "panel.js"));
   const styleUri = current.webview.asWebviewUri(vscode.Uri.joinPath(context.extensionUri, "media", "panel.css"));
   current.webview.html = panelHtml({ scriptUri: String(scriptUri), styleUri: String(styleUri), cspSource: current.webview.cspSource, nonce });
-  current.onDidDispose(() => { current = undefined; });
+  current.onDidDispose(() => {
+    generation += 1;
+    if (contentTimer) clearTimeout(contentTimer);
+    contentTimer = undefined;
+    panelReady = false;
+    current = undefined;
+  });
   current.webview.onDidReceiveMessage(async (message) => {
+    if (message.type === "ready") {
+      panelReady = true;
+      postStatus();
+      return;
+    }
     if (message.type === "close") current?.dispose();
     if (message.type === "query") schedule(message.text, message.tab);
     if (message.type === "open") await openHit(message.id);
   });
-  post({ groups: [], status: workspaceStatus(), hint: EMPTY_HINT });
 }
 
 function schedule(text: string, tab: SearchTab): void {
   const currentGeneration = ++generation;
   if (contentTimer) clearTimeout(contentTimer);
-  void publish(text, tab, currentGeneration, false);
+  const done = publish(text, tab, currentGeneration, false);
+  quickFlight = { generation: currentGeneration, text, tab, done };
   contentTimer = setTimeout(() => {
+    contentTimer = undefined;
     void publish(text, tab, currentGeneration, true);
   }, CONTENT_DEBOUNCE_MS);
 }
@@ -196,33 +310,43 @@ function noteContentPosted(includeContent: boolean, requestGeneration: number): 
   if (includeContent) postedContentGeneration = requestGeneration;
 }
 
-async function publish(text: string, tab: SearchTab, currentGeneration: number, includeContent: boolean): Promise<void> {
+async function publish(text: string, tab: SearchTab, currentGeneration: number, includeContent: boolean): Promise<QuickSnapshot | undefined> {
   const query = parseQuery(text);
   if (query.terms.length === 0 && query.extensions.length === 0) {
     if (currentDecision(currentGeneration, includeContent)) {
       post({ groups: [], status: workspaceStatus(), hint: EMPTY_HINT });
       noteContentPosted(includeContent, currentGeneration);
     }
-    return;
+    return undefined;
   }
+  const flight = quickFlight;
+  const prior = includeContent && flight && flight.generation === currentGeneration && flight.text === text && flight.tab === tab
+    ? await flight.done
+    : undefined;
+  if (currentGeneration !== generation) return undefined;
+  const limit = (tab === "all" ? ALL_GROUP_CAP : TAB_CAP) + 1;
   const result = await coordinate({
     query, tab, includeContent, isStale: () => currentGeneration !== generation,
+    ...(prior ? { prior: { files: prior.files, symbols: prior.symbols, commands: prior.commands } } : {}),
     providers: {
-      files: { search: (value) => searchFiles(value) },
-      symbols: { search: (value) => searchSymbols(value) },
+      files: { search: (value) => searchFiles(value, limit) },
+      symbols: { search: (value) => searchSymbols(value, limit) },
       commands: { search: async (value) => matchCommands(await readCommands(), value) },
       content: { search: (value) => searchContent(value) },
     },
   });
-  if (result.stale || !currentDecision(currentGeneration, includeContent)) return;
+  if (result.stale || !currentDecision(currentGeneration, includeContent)) return undefined;
   remember(result);
   post(toPayload(result, tab));
   noteContentPosted(includeContent, currentGeneration);
+  if (includeContent) return undefined;
+  return { generation: currentGeneration, text, tab, files: result.files, symbols: result.symbols, commands: result.commands };
 }
 
 function post(payload: { groups: unknown[]; status: string; hint: string }): void {
   lastPayload = payload;
-  current?.webview.postMessage({ type: "results", payload });
+  if (!panelReady || !current) return;
+  current.webview.postMessage({ type: "results", payload });
 }
 
 function postStatus(): void {
@@ -253,43 +377,37 @@ function runRg(args: string[], cwd: string): Promise<string> {
   });
 }
 
-async function searchFiles(query: SearchQuery) {
-  const folders = vscode.workspace.workspaceFolders ?? [];
-  const indexed: { relativePath: string; uri: string }[] = [];
-  for (const folder of folders) {
-    const relativePaths = parseRgFiles(await runRg(fileRgArgs(excludeGlobs()), folder.uri.fsPath));
-    for (const relativePath of relativePaths) {
-      indexed.push({ relativePath, uri: vscode.Uri.joinPath(folder.uri, relativePath).toString() });
-    }
-  }
-  return [...matchFiles(indexed, query), ...dependencyFileHits(dependencyJars, query)];
+async function searchFiles(query: SearchQuery, limit: number) {
+  return [...matchFiles(workspaceFiles, query, limit), ...dependencyFileHits(dependencyJars, query, limit)];
 }
 
 async function searchContent(query: SearchQuery) {
   const folders = vscode.workspace.workspaceFolders ?? [];
-  const workspaceHits = [];
-  for (const folder of folders) {
-    const matches = parseRgMatches(await runRg(contentRgArgs(query, excludeGlobs()), folder.uri.fsPath), TAB_CAP);
-    for (const match of matches) {
-      workspaceHits.push({
-        id: `content:${folder.uri.fsPath}:${match.path}:${match.line}`,
+  return searchContentFolders(
+    folders.map(folder => ({ key: folder.uri.toString(), fsPath: folder.uri.fsPath })),
+    (folder) => runRg(contentRgArgs(query, excludeGlobs()), folder.fsPath),
+    TAB_CAP,
+    dependencyContentHits(dependencyJars, query),
+    (folderKey, match, stableIndex) => {
+      const folder = folders.find(item => item.uri.toString() === folderKey);
+      return {
+        id: `content:${folder?.uri.fsPath ?? folderKey}:${match.path}:${match.line}`,
         kind: "content" as const,
         title: match.path.split("/").pop() ?? match.path,
         detail: match.path,
         source: { type: "workspace" as const },
-        uri: vscode.Uri.joinPath(folder.uri, match.path).toString(),
+        uri: folder ? folderUri(folder.uri, match.path) : undefined,
         line: match.line,
         preview: match.preview,
         extension: extensionOf(match.path),
-        stableIndex: workspaceHits.length,
-      });
-    }
-  }
-  return [...workspaceHits, ...dependencyContentHits(dependencyJars, query)];
+        stableIndex,
+      };
+    },
+  );
 }
 
-async function searchSymbols(query: SearchQuery) {
-  const dependencyHits = dependencySymbolHits(dependencyJars, query);
+async function searchSymbols(query: SearchQuery, limit: number) {
+  const dependencyHits = dependencySymbolHits(dependencyJars, query, limit);
   if (query.terms.length === 0) return dependencyHits;
   const symbols = await vscode.commands.executeCommand<vscode.SymbolInformation[]>("vscode.executeWorkspaceSymbolProvider", query.terms.join(" "));
   return [...matchWorkspaceSymbols((symbols ?? []).map((symbol) => ({

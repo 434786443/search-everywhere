@@ -1,10 +1,15 @@
 import { spawn } from "node:child_process";
+import path from "node:path";
 
 export interface ToolResult { timedOut: boolean; code: number | null; stdout: string; stderr: string; }
 
+export function commandNeedsShell(command: string, platform: NodeJS.Platform = process.platform): boolean {
+  return platform === "win32" && /\.(?:cmd|bat)$/i.test(path.basename(command));
+}
+
 export function runTool(input: { cwd: string; command: string; args: string[]; timeoutMs: number }): Promise<ToolResult> {
   return new Promise((resolve) => {
-    const child = spawn(input.command, input.args, { cwd: input.cwd });
+    const child = spawn(input.command, input.args, { cwd: input.cwd, shell: commandNeedsShell(input.command) });
     let stdout = "";
     let stderr = "";
     let timedOut = false;

@@ -3,34 +3,51 @@ import { ClassInfo, ClassMethod } from "./classFile";
 const BASE: Record<string, string> = { B: "byte", C: "char", D: "double", F: "float", I: "int", J: "long", S: "short", Z: "boolean" };
 
 function parseType(sig: string, i: number): [string, number] {
+  if (i < 0 || i >= sig.length) throw new Error("bad signature");
   const c = sig[i];
   if (BASE[c]) return [BASE[c], i + 1];
-  if (c === "T") { const end = sig.indexOf(";", i); return [sig.slice(i + 1, end), end + 1]; }
-  if (c === "[") { const [inner, n] = parseType(sig, i + 1); return [`${inner}[]`, n]; }
+  if (c === "T") {
+    const end = sig.indexOf(";", i);
+    if (end < 0) throw new Error("bad signature");
+    return [sig.slice(i + 1, end), end + 1];
+  }
+  if (c === "[") {
+    const [inner, n] = parseType(sig, i + 1);
+    if (n <= i) throw new Error("bad signature");
+    return [`${inner}[]`, n];
+  }
   if (c !== "L") throw new Error("bad signature");
   let j = i + 1;
   let name = "";
-  while (sig[j] !== "<" && sig[j] !== ";") { name += sig[j] === "/" ? "." : sig[j]; j++; }
+  while (j < sig.length && sig[j] !== "<" && sig[j] !== ";") {
+    name += sig[j] === "/" ? "." : sig[j];
+    j++;
+  }
+  if (j >= sig.length) throw new Error("bad signature");
   let args = "";
   if (sig[j] === "<") {
     j++;
     const parts: string[] = [];
-    while (sig[j] !== ">") {
+    while (j < sig.length && sig[j] !== ">") {
       if (sig[j] === "*") { parts.push("?"); j++; continue; }
       if (sig[j] === "+" || sig[j] === "-") {
+        const mark = sig[j];
         const [t, n] = parseType(sig, j + 1);
-        parts.push(`? ${sig[j] === "+" ? "extends" : "super"} ${t}`);
+        if (n <= j) throw new Error("bad signature");
+        parts.push(`? ${mark === "+" ? "extends" : "super"} ${t}`);
         j = n;
         continue;
       }
       const [t, n] = parseType(sig, j);
+      if (n <= j) throw new Error("bad signature");
       parts.push(t);
       j = n;
     }
+    if (j >= sig.length || sig[j] !== ">") throw new Error("bad signature");
     args = `<${parts.join(", ")}>`;
     j++;
   }
-  if (sig[j] !== ";") throw new Error("bad signature");
+  if (j >= sig.length || sig[j] !== ";") throw new Error("bad signature");
   return [name + args, j + 1];
 }
 
@@ -45,7 +62,13 @@ function parseMethodType(sig: string): { params: string[]; ret: string } {
   }
   i++;
   const params: string[] = [];
-  while (sig[i] !== ")") { const [t, n] = parseType(sig, i); params.push(t); i = n; }
+  while (i < sig.length && sig[i] !== ")") {
+    const [t, n] = parseType(sig, i);
+    if (n <= i) throw new Error("bad signature");
+    params.push(t);
+    i = n;
+  }
+  if (i >= sig.length || sig[i] !== ")") throw new Error("bad signature");
   i++;
   if (sig[i] === "V") return { params, ret: "void" };
   const [ret] = parseType(sig, i);

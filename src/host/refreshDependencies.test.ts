@@ -4,6 +4,7 @@ import { gradleArgs, mavenArgs } from "../classpath/parseClasspath";
 import { ToolResult } from "../classpath/resolveProcess";
 import { IndexedJar } from "../jar/indexJar";
 import { FILE_TEXT_CAP, JAR_TEXT_CAP, RESOLVE_TIMEOUT_MS } from "../limits";
+import { statusText } from "../status/statusText";
 import { refreshDependencyIndex, RefreshInput } from "./refreshDependencies";
 
 const ZIP = storedZip([
@@ -193,6 +194,176 @@ test("counts a jar that cannot be unzipped and still indexes the next one", asyn
   assert.equal(outcome.jars[0].jarPath, "/repo/a.jar");
   assert.match(outcome.log, /\/repo\/bad\.jar/);
   assert.match(outcome.log, /eocd/);
+});
+
+test("reuses sources only when that jar is unchanged", async () => {
+  const sourcesZip = storedZip([
+    { name: "com/example/A.java", data: Buffer.from("class A { int longer; }"), method: 0 },
+  ]);
+  const reads: string[] = [];
+  const statOf = (sourcesMtime: number) => (filePath: string) => {
+    if (filePath === "/repo/a.jar") return { mtimeMs: 1, size: 10 };
+    if (filePath === "/repo/a-sources.jar") return { mtimeMs: sourcesMtime, size: 20 };
+    return undefined;
+  };
+  const input = baseInput({
+    exists: (filePath) => filePath === "/app/pom.xml" || filePath === "/repo/a.jar" || filePath === "/repo/a-sources.jar",
+    which: (command) => command === "mvn",
+    stat: statOf(2),
+    readFile: (filePath) => {
+      reads.push(filePath);
+      if (filePath === "/repo/a.jar") return ZIP;
+      if (filePath === "/repo/a-sources.jar") return sourcesZip;
+      return undefined;
+    },
+    run: async () => ok("/repo/a.jar"),
+    fileTextCap: 4,
+  });
+  const first = await refreshDependencyIndex(input);
+  const java = first.jars[0].texts.find(item => item.entry === "com/example/A.java");
+  assert.equal(java?.text, "clas");
+  assert.equal(java?.truncated, true);
+  assert.equal(first.jars[0].paths.some(item => item.entry === "com/example/A.java" && item.truncated), true);
+  assert.deepEqual(first.jars[0].sources, { jarPath: "/repo/a-sources.jar", mtimeMs: 2, size: 20 });
+  const afterFirst = reads.length;
+  const second = await refreshDependencyIndex({ ...input, previous: first.jars });
+  assert.equal(reads.length, afterFirst);
+  assert.equal(second.unreadableCount, 0);
+
+  const changedReads: string[] = [];
+  const changed = await refreshDependencyIndex({
+    ...input,
+    previous: second.jars,
+    stat: statOf(9),
+    readFile: (filePath) => {
+      changedReads.push(filePath);
+      if (filePath === "/repo/a.jar") return ZIP;
+      if (filePath === "/repo/a-sources.jar") return sourcesZip;
+      return undefined;
+    },
+  });
+  assert.ok(changedReads.includes("/repo/a-sources.jar"));
+  assert.equal(changed.jars[0].sources?.mtimeMs, 9);
+});
+
+test("reuses the previous unreadable sources count when the sources jar is unchanged", async () => {
+  const input = baseInput({
+    exists: (filePath) => filePath === "/app/pom.xml" || filePath === "/repo/a.jar" || filePath === "/repo/a-sources.jar",
+    which: (command) => command === "mvn",
+    stat: (filePath) => filePath === "/repo/a.jar" || filePath === "/repo/a-sources.jar" ? { mtimeMs: 8, size: 9 } : undefined,
+    readFile: (filePath) => filePath === "/repo/a.jar" ? ZIP : Buffer.from("not a zip"),
+    run: async () => ok("/repo/a.jar"),
+  });
+  const first = await refreshDependencyIndex(input);
+  assert.equal(first.unreadableCount, 1);
+  let reads = 0;
+  const second = await refreshDependencyIndex({
+    ...input,
+    previous: first.jars,
+    readFile: () => {
+      reads += 1;
+      return Buffer.from("not a zip");
+    },
+  });
+  assert.equal(reads, 0);
+  assert.equal(second.unreadableCount, 1);
+});
+
+test("resolves a nested module and skips children of a reactor", async () => {
+  const calls: string[] = [];
+  const outcome = await refreshDependencyIndex(baseInput({
+    buildFiles: ["/app/pom.xml", "/app/child/pom.xml", "/app/other/pom.xml", "/side/pom.xml"],
+    exists: (filePath) => filePath.endsWith("/pom.xml") || filePath === "/repo/root.jar" || filePath === "/repo/side.jar",
+    which: (command) => command === "mvn",
+    stat: (filePath) => filePath.endsWith(".jar") ? { mtimeMs: 1, size: ZIP.length } : undefined,
+    readFile: (filePath) => {
+      if (filePath === "/app/pom.xml") return Buffer.from("<project><modules><module>child</module></modules></project>");
+      if (filePath === "/repo/root.jar" || filePath === "/repo/side.jar") return ZIP;
+      return undefined;
+    },
+    run: async (call) => {
+      calls.push(call.cwd);
+      if (call.cwd === "/side") return ok("/repo/side.jar");
+      return ok("/repo/root.jar");
+    },
+  }));
+  assert.deepEqual(calls.sort(), ["/app", "/side"]);
+  assert.deepEqual(outcome.jars.map(jar => jar.jarPath).sort(), ["/repo/root.jar", "/repo/side.jar"]);
+});
+
+test("does not resolve the same module directory twice", async () => {
+  const calls: string[] = [];
+  await refreshDependencyIndex(baseInput({
+    buildFiles: ["/app/pom.xml", "/app/pom.xml", "/app/build.gradle"],
+    exists: (filePath) => filePath === "/app/pom.xml" || filePath === "/app/build.gradle",
+    which: (command) => command === "mvn" || command === "gradle",
+    run: async (call) => {
+      calls.push(call.command);
+      return ok("");
+    },
+  }));
+  assert.deepEqual(calls.sort(), ["gradle", "mvn"]);
+});
+
+test("a gradle allprojects root covers nested gradle builds", async () => {
+  const calls: string[] = [];
+  await refreshDependencyIndex(baseInput({
+    buildFiles: ["/app/build.gradle", "/app/child/build.gradle"],
+    exists: (filePath) => filePath === "/app/build.gradle" || filePath === "/app/child/build.gradle",
+    which: (command) => command === "gradle",
+    readFile: (filePath) => filePath === "/app/build.gradle" ? Buffer.from("allprojects { }\n") : undefined,
+    run: async (call) => {
+      calls.push(call.cwd);
+      return ok("");
+    },
+  }));
+  assert.deepEqual(calls, ["/app"]);
+});
+
+test("uses mvnw.cmd and gradlew.bat when the shell wrappers are absent", async () => {
+  const maven = await refreshDependencyIndex(baseInput({
+    exists: (filePath) => filePath === "/app/pom.xml" || filePath === "/app/mvnw.cmd",
+    which: () => false,
+    run: async (call) => ok(call.command),
+  }));
+  assert.match(maven.log, /^$/);
+  const commands: string[] = [];
+  await refreshDependencyIndex(baseInput({
+    exists: (filePath) => filePath === "/app/pom.xml" || filePath === "/app/mvnw.cmd" || filePath === "/app/build.gradle" || filePath === "/app/gradlew.bat",
+    which: () => false,
+    run: async (call) => {
+      commands.push(call.command);
+      return ok("");
+    },
+  }));
+  assert.deepEqual(commands.sort(), ["/app/gradlew.bat", "/app/mvnw.cmd"]);
+});
+
+test("keeps previous jars for a failed module and uses the existing failure status", async () => {
+  const previous = [{ ...emptyJar("/repo/old.jar"), moduleRoots: ["/bad"] }];
+  const outcome = await refreshDependencyIndex(baseInput({
+    previous,
+    workspaceRoots: ["/ok", "/bad"],
+    exists: (filePath) => filePath === "/ok/pom.xml" || filePath === "/bad/pom.xml" || filePath === "/repo/ok.jar",
+    which: (command) => command === "mvn",
+    stat: (filePath) => filePath === "/repo/ok.jar" ? { mtimeMs: 7, size: ZIP.length } : undefined,
+    readFile: (filePath) => filePath === "/repo/ok.jar" ? ZIP : undefined,
+    run: async (call) => {
+      if (call.cwd === "/bad") return { timedOut: true, code: null, stdout: "", stderr: "" };
+      return ok("/repo/ok.jar");
+    },
+  }));
+  assert.equal(outcome.failed, true);
+  assert.equal(outcome.hasPreviousIndex, true);
+  assert.deepEqual(outcome.jars.map(jar => jar.jarPath).sort(), ["/repo/ok.jar", "/repo/old.jar"]);
+  assert.match(outcome.log, /timed out/);
+  assert.equal(statusText({
+    hasFolder: true,
+    updating: false,
+    failed: outcome.failed,
+    hasPreviousIndex: outcome.hasPreviousIndex,
+    unreadableCount: outcome.unreadableCount,
+  }), "依赖解析失败，仍使用上一份索引");
 });
 
 function ok(stdout: string): ToolResult {

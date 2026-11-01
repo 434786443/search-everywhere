@@ -95,4 +95,5 @@
 
   input.addEventListener("input", postQuery);
   input.focus();
+  vscode.postMessage({ type: "ready" });
 }());

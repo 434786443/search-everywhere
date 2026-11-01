@@ -73,7 +73,10 @@ test("indexes class names and capped text from a stored and deflate zip", () => 
   assert.match(brokenClass.declaration, /无法读取方法签名/);
 
   const capped = indexJarEntries({ ...identity, entries, fileTextCap: 4, jarTextCap: JAR_TEXT_CAP });
-  assert.equal(capped.texts.some(item => item.entry === "meta/app.xml"), false);
+  const cappedXml = capped.texts.find(item => item.entry === "meta/app.xml");
+  assert.ok(cappedXml);
+  assert.equal(cappedXml.text, "<app");
+  assert.equal(cappedXml.truncated, true);
   const xmlPath = capped.paths.find(item => item.entry === "meta/app.xml");
   assert.ok(xmlPath);
   assert.equal(xmlPath.truncated, true);
@@ -96,4 +99,30 @@ test("does not mark a fully stored multi-byte UTF-8 file as truncated", () => {
   assert.ok(text);
   assert.equal(text.text, "你好");
   assert.equal(text.truncated, false);
+});
+
+test("keeps a truncated text prefix up to the file cap and remaining jar budget", () => {
+  const data = Buffer.from("abcdefghij");
+  const indexed = indexJarEntries({
+    jarPath: "/libs/app.jar",
+    mtimeMs: 1,
+    size: 1,
+    entries: [
+      { name: "meta/a.txt", data },
+      { name: "meta/b.txt", data },
+      { name: "meta/c.txt", data },
+    ],
+    fileTextCap: 6,
+    jarTextCap: 8,
+  });
+  const a = indexed.texts.find(item => item.entry === "meta/a.txt");
+  const b = indexed.texts.find(item => item.entry === "meta/b.txt");
+  assert.equal(a?.text, "abcdef");
+  assert.equal(a?.truncated, true);
+  assert.equal(b?.text, "ab");
+  assert.equal(b?.truncated, true);
+  assert.equal(indexed.texts.some(item => item.entry === "meta/c.txt"), false);
+  const c = indexed.paths.find(item => item.entry === "meta/c.txt");
+  assert.ok(c);
+  assert.equal(c.truncated, true);
 });

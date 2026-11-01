@@ -11,4 +11,8 @@ test("finds the first matching declaration", () => {
   const source = "public class Outer {\n  class Inner {}\n}\n";
   assert.equal(findDeclarationLine(source, "Inner"), 2);
   assert.equal(findDeclarationLine(source, "Missing"), undefined);
+  assert.equal(findDeclarationLine("// class Inner\npublic class Inner {}", "Inner"), 2);
+  assert.equal(findDeclarationLine("/* class Inner */\nclass Inner {}", "Inner"), 2);
+  assert.equal(findDeclarationLine("int myclass;\nclass Inner {}", "Inner"), 2);
+  assert.equal(findDeclarationLine("myclass Inner {}", "Inner"), undefined);
 });

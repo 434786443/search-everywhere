@@ -1,4 +1,4 @@
-import { rankHits } from "../rank/rankHits";
+import { hitMatches, rankHits } from "../rank/rankHits";
 import { SearchHit, SearchQuery } from "../types";
 
 export interface WorkspaceSymbolInput { name: string; detail: string; uri: string; line: number; extension: string; }
@@ -20,17 +20,25 @@ export function matchWorkspaceSymbols(symbols: WorkspaceSymbolInput[], query: Se
   return rankHits(hits, query);
 }
 
-export function matchDependencyClasses(classes: DependencyClassInput[], query: SearchQuery): SearchHit[] {
-  const hits: SearchHit[] = classes.map((item, stableIndex) => ({
-    id: `jar-class:${item.jarPath}!${item.entry}`,
-    kind: "symbol",
-    title: item.simpleName,
-    detail: item.detail,
-    source: { type: "jar", jarPath: item.jarPath, jarName: item.jarName },
-    extension: ".class",
-    treatAsJava: true,
-    stableIndex,
-    entry: item.entry,
-  }));
+export function matchDependencyClasses(classes: Iterable<DependencyClassInput>, query: SearchQuery, limit = Number.POSITIVE_INFINITY): SearchHit[] {
+  const hits: SearchHit[] = [];
+  let stableIndex = 0;
+  for (const item of classes) {
+    const hit: SearchHit = {
+      id: `jar-class:${item.jarPath}!${item.entry}`,
+      kind: "symbol",
+      title: item.simpleName,
+      detail: item.detail,
+      source: { type: "jar", jarPath: item.jarPath, jarName: item.jarName },
+      extension: ".class",
+      treatAsJava: true,
+      stableIndex,
+      entry: item.entry,
+    };
+    stableIndex += 1;
+    if (!hitMatches(hit, query)) continue;
+    hits.push(hit);
+    if (hits.length >= limit) break;
+  }
   return rankHits(hits, query);
 }

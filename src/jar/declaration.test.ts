@@ -15,3 +15,19 @@ test("declaration shows generic signatures and no method bodies", () => {
   assert.equal(text.includes("invoke"), false);
   assert.equal(text.includes("field"), false);
 });
+
+test("truncated signature finishes instead of hanging", () => {
+  const text = formatDeclaration({
+    access: 0x0001,
+    thisName: "com/example/Hello",
+    superName: "java/lang/Object",
+    interfaces: [],
+    methods: [
+      { access: 0x0001, name: "cutOff", descriptor: "(Ljava/lang/String;)Ljava/lang/String;", signature: "(Ltruncated" },
+      { access: 0x0001, name: "typeVar", descriptor: "()V", signature: "(TNoSemi" },
+    ],
+    hasRecord: false,
+  });
+  assert.match(text, /public java\.lang\.String cutOff\(java\.lang\.String\);/);
+  assert.match(text, /public void typeVar\(\);/);
+});

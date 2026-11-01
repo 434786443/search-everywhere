@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { coordinate, SearchProvider } from "./coordinator";
+import { coordinate, emptyResults, SearchProvider } from "./coordinator";
 import { SearchHit, SearchQuery } from "../types";
 
 function file(id: string, index: number): SearchHit {
@@ -126,6 +126,50 @@ test("extension mask skips the command provider", async () => {
     providers: { files: provider([]), symbols: provider([]), commands, content: provider([]) },
   });
   assert.equal(called, false);
+});
+
+test("empty groups do not share one object", () => {
+  const result = emptyResults();
+  result.files.hits.push(file("1", 0));
+  assert.equal(result.symbols.hits.length, 0);
+  assert.equal(result.commands.hits.length, 0);
+  assert.equal(result.content.hits.length, 0);
+});
+
+test("content pass does not rerun finished providers", async () => {
+  let filesCalled = 0;
+  let symbolsCalled = 0;
+  let commandsCalled = 0;
+  let contentCalled = 0;
+  const contentHit: SearchHit = {
+    id: "content",
+    kind: "content",
+    title: "F.java",
+    detail: "src/F.java",
+    source: { type: "workspace" },
+    extension: ".java",
+    preview: "F",
+    stableIndex: 0,
+  };
+  const providers = {
+    files: { search: async () => { filesCalled += 1; return [file("1", 0)]; } },
+    symbols: { search: async () => { symbolsCalled += 1; return []; } },
+    commands: { search: async () => { commandsCalled += 1; return []; } },
+    content: { search: async () => { contentCalled += 1; return [contentHit]; } },
+  };
+  const first = await coordinate({
+    query, tab: "all", includeContent: false, isStale: () => false, providers,
+  });
+  const second = await coordinate({
+    query, tab: "all", includeContent: true, isStale: () => false, providers,
+    prior: { files: first.files, symbols: first.symbols, commands: first.commands },
+  });
+  assert.equal(filesCalled, 1);
+  assert.equal(symbolsCalled, 1);
+  assert.equal(commandsCalled, 1);
+  assert.equal(contentCalled, 1);
+  assert.deepEqual(second.files.hits.map(item => item.id), ["1"]);
+  assert.deepEqual(second.content.hits.map(item => item.id), ["content"]);
 });
 
 test("stale generation is flagged", async () => {

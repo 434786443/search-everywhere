@@ -1,4 +1,9 @@
+import { randomBytes } from "node:crypto";
 import { EMPTY_HINT } from "../limits";
+
+export function createPanelNonce(): string {
+  return randomBytes(16).toString("base64url");
+}
 
 export function panelHtml(options: { scriptUri: string; styleUri: string; cspSource: string; nonce: string }): string {
   const nonce = options.nonce;

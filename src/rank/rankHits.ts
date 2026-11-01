@@ -100,23 +100,23 @@ function scoreFor(hit: SearchHit, terms: string[]): MatchScore | undefined {
   return { degree: degreeScore, hasNameMatch };
 }
 
+export function hitMatches(hit: SearchHit, query: SearchQuery): boolean {
+  if (!matchesExtension(hit, query.extensions)) return false;
+  if (hit.kind === "content") {
+    const previewLines = (hit.preview ?? "").toLowerCase().split(/\r\n?|\n/);
+    return previewLines.some(line => query.terms.every(term => line.includes(term.toLowerCase())));
+  }
+  return scoreFor(hit, query.terms) !== undefined;
+}
+
 export function rankHits(hits: SearchHit[], query: SearchQuery): SearchHit[] {
   const terms = query.terms;
   return hits
-    .filter(hit => matchesExtension(hit, query.extensions))
+    .filter(hit => hitMatches(hit, query))
     .map(hit => {
-      if (hit.kind === "content") {
-        const previewLines = (hit.preview ?? "").toLowerCase().split(/\r\n?|\n/);
-        return {
-          hit,
-          score: previewLines.some(line => terms.every(term => line.includes(term.toLowerCase())))
-            ? { degree: 0, hasNameMatch: false }
-            : undefined,
-        };
-      }
-      return { hit, score: scoreFor(hit, terms) };
+      if (hit.kind === "content") return { hit, score: { degree: 0, hasNameMatch: false } as MatchScore };
+      return { hit, score: scoreFor(hit, terms) as MatchScore };
     })
-    .filter((item): item is { hit: SearchHit; score: MatchScore } => item.score !== undefined)
     .sort((a, b) => (a.hit.kind === "content" && b.hit.kind === "content" ? 0
       : Number(b.score.hasNameMatch) - Number(a.score.hasNameMatch) || b.score.degree - a.score.degree)
       || (a.hit.source.type === "workspace" ? 0 : 1) - (b.hit.source.type === "workspace" ? 0 : 1)

@@ -1,6 +1,6 @@
 import { basename } from "node:path";
 import { IndexedJar } from "../jar/indexJar";
-import { rankHits } from "../rank/rankHits";
+import { hitMatches, rankHits } from "../rank/rankHits";
 import { matchDependencyClasses } from "../symbols/matchSymbols";
 import { HitSource, SearchHit, SearchQuery } from "../types";
 
@@ -18,50 +18,72 @@ function entryExtension(entry: string): string {
   return dot <= 0 ? "" : base.slice(dot).toLowerCase();
 }
 
-function fileEntries(jar: IndexedJar): { entry: string; truncated: boolean }[] {
-  const byEntry = new Map<string, { entry: string; truncated: boolean }>();
-  const add = (entry: string, truncated: boolean) => {
-    const existing = byEntry.get(entry);
-    if (existing) {
-      existing.truncated = existing.truncated || truncated;
-      return;
-    }
-    byEntry.set(entry, { entry, truncated });
+function considerFileEntry(
+  jar: IndexedJar,
+  seen: Map<string, SearchHit>,
+  hits: SearchHit[],
+  query: SearchQuery,
+  entry: string,
+  truncated: boolean,
+  limit: number,
+): boolean {
+  const existing = seen.get(entry);
+  if (existing) {
+    existing.textTruncated = existing.textTruncated || truncated;
+    return hits.length >= limit;
+  }
+  const hit: SearchHit = {
+    id: `jar-file:${jar.jarPath}!${entry}`,
+    kind: "file",
+    title: entryTitle(entry),
+    detail: entry,
+    source: jarSource(jar.jarPath),
+    extension: entryExtension(entry),
+    textTruncated: truncated,
+    stableIndex: hits.length,
+    entry,
   };
-  for (const item of jar.classes) add(item.entry, false);
-  for (const item of jar.texts) add(item.entry, item.truncated);
-  for (const item of jar.paths) add(item.entry, item.truncated);
-  return [...byEntry.values()];
+  seen.set(entry, hit);
+  if (!hitMatches(hit, query)) return false;
+  hits.push(hit);
+  return hits.length >= limit;
 }
 
-export function dependencyFileHits(jars: IndexedJar[], query: SearchQuery): SearchHit[] {
+export function dependencyFileHits(jars: IndexedJar[], query: SearchQuery, limit = Number.POSITIVE_INFINITY): SearchHit[] {
   const hits: SearchHit[] = [];
   for (const jar of jars) {
-    for (const item of fileEntries(jar)) {
-      hits.push({
-        id: `jar-file:${jar.jarPath}!${item.entry}`,
-        kind: "file",
-        title: entryTitle(item.entry),
-        detail: item.entry,
-        source: jarSource(jar.jarPath),
-        extension: entryExtension(item.entry),
-        textTruncated: item.truncated,
-        stableIndex: hits.length,
-        entry: item.entry,
-      });
+    const seen = new Map<string, SearchHit>();
+    let filled = false;
+    for (const item of jar.classes) {
+      if (considerFileEntry(jar, seen, hits, query, item.entry, false, limit)) { filled = true; break; }
     }
+    if (filled) break;
+    for (const item of jar.texts) {
+      if (considerFileEntry(jar, seen, hits, query, item.entry, item.truncated, limit)) { filled = true; break; }
+    }
+    if (filled) break;
+    for (const item of jar.paths) {
+      if (considerFileEntry(jar, seen, hits, query, item.entry, item.truncated, limit)) { filled = true; break; }
+    }
+    if (filled) break;
   }
   return rankHits(hits, query);
 }
 
-export function dependencySymbolHits(jars: IndexedJar[], query: SearchQuery): SearchHit[] {
-  return matchDependencyClasses(jars.flatMap(jar => jar.classes.map(item => ({
-    simpleName: item.simpleName,
-    detail: item.binaryName,
-    jarPath: jar.jarPath,
-    jarName: basename(jar.jarPath),
-    entry: item.entry,
-  }))), query);
+export function dependencySymbolHits(jars: IndexedJar[], query: SearchQuery, limit = Number.POSITIVE_INFINITY): SearchHit[] {
+  return matchDependencyClasses(function* classes() {
+    for (const jar of jars) {
+      for (const item of jar.classes) {
+        yield {
+          simpleName: item.simpleName,
+          detail: item.binaryName,
+          jarPath: jar.jarPath,
+          jarName: basename(jar.jarPath),
+          entry: item.entry,
+        };
+      }
+    }
+  }(), query, limit);
 }
 
 export function dependencyContentHits(jars: IndexedJar[], query: SearchQuery): SearchHit[] {

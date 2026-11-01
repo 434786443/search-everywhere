@@ -18,15 +18,19 @@ export interface CoordinateInput {
   includeContent: boolean;
   providers: { files: SearchProvider; symbols: SearchProvider; commands: SearchProvider; content: SearchProvider };
   isStale(): boolean;
+  prior?: { files: ResultGroup; symbols: ResultGroup; commands: ResultGroup };
 }
 
 function group(hits: SearchHit[], limit: number): ResultGroup {
   return { hits: hits.slice(0, limit), truncated: hits.length > limit };
 }
 
+function blankGroup(): ResultGroup {
+  return { hits: [], truncated: false };
+}
+
 export function emptyResults(stale = false): GroupedResults {
-  const empty = { hits: [], truncated: false };
-  return { stale, files: empty, symbols: empty, commands: empty, content: empty, contentFailed: false };
+  return { stale, files: blankGroup(), symbols: blankGroup(), commands: blankGroup(), content: blankGroup(), contentFailed: false };
 }
 
 export async function coordinate(input: CoordinateInput): Promise<GroupedResults> {
@@ -56,9 +60,10 @@ export async function coordinate(input: CoordinateInput): Promise<GroupedResults
     }
   };
 
-  const filesPromise = start(input.providers.files, wantFiles);
-  const symbolsPromise = start(input.providers.symbols, wantSymbols);
-  const commandsPromise = start(input.providers.commands, wantCommands);
+  const reuse = input.includeContent ? input.prior : undefined;
+  const filesPromise = reuse ? Promise.resolve([]) : start(input.providers.files, wantFiles);
+  const symbolsPromise = reuse ? Promise.resolve([]) : start(input.providers.symbols, wantSymbols);
+  const commandsPromise = reuse ? Promise.resolve([]) : start(input.providers.commands, wantCommands);
   const contentPromise = start(input.providers.content, wantContent, () => {
     contentFailed = true;
   });
@@ -71,9 +76,9 @@ export async function coordinate(input: CoordinateInput): Promise<GroupedResults
   if (input.isStale()) return emptyResults(true);
   return {
     stale: false,
-    files: group(rankHits(files, query), limit),
-    symbols: group(rankHits(symbols, query), limit),
-    commands: group(rankHits(commands, query), limit),
+    files: reuse ? reuse.files : group(rankHits(files, query), limit),
+    symbols: reuse ? reuse.symbols : group(rankHits(symbols, query), limit),
+    commands: reuse ? reuse.commands : group(rankHits(commands, query), limit),
     content: group(rankHits(content, query), limit),
     contentFailed,
   };
