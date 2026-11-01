@@ -1,0 +1,8 @@
+body { font-family: var(--vscode-font-family); color: var(--vscode-foreground); background: var(--vscode-editor-background); margin: 0; padding: 12px; }
+.tabs { display: flex; gap: 8px; }
+.tabs button { background: transparent; color: inherit; border: 0; border-bottom: 2px solid transparent; padding: 6px 8px; }
+.tabs button.active { border-bottom-color: var(--vscode-focusBorder); }
+input { width: 100%; box-sizing: border-box; margin: 12px 0; padding: 8px; background: var(--vscode-input-background); color: var(--vscode-input-foreground); border: 1px solid var(--vscode-input-border, transparent); }
+.hit, .note, h2 { padding: 4px 8px; }
+.hit.selected { background: var(--vscode-list-activeSelectionBackground); color: var(--vscode-list-activeSelectionForeground); }
+.meta { opacity: 0.75; }
