@@ -16,7 +16,7 @@ export function parseRgMatches(stdout: string, limit: number): RgMatch[] {
   for (const raw of stdout.split(/\r?\n/)) {
     const found = /^(.*?):(\d+):(.*)$/.exec(raw);
     if (!found) continue;
-    matches.push({ path: found[1], line: Number(found[2]), preview: found[3] });
+    matches.push({ path: found[1].replace(/^\.\//, ""), line: Number(found[2]), preview: found[3] });
     if (matches.length === limit) break;
   }
   return matches;
@@ -32,7 +32,7 @@ export function contentRgArgs(query: SearchQuery, excludeGlobs: string[]): strin
     ...excludeGlobs.flatMap(glob => ["--glob", glob]),
     ...query.extensions.flatMap(extension => ["--glob", `*${extension}`]),
   ];
-  return ["--pcre2", "-n", "-i", "--no-heading", "--glob", "!.git/**", ...globs, pattern];
+  return ["--pcre2", "-n", "-i", "--no-heading", "--glob", "!.git/**", ...globs, pattern, "."];
 }
 
 export function fileRgArgs(excludeGlobs: string[]): string[] {
