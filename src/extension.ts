@@ -25,6 +25,9 @@ import { SearchHit, SearchQuery, SearchTab } from "./types";
 import { contentRgArgs, fileRgArgs, parseRgFiles, searchContentFolders, toRgExclude } from "./workspace/rg";
 import { FolderRoot, keyFor, makeEntries, shouldFullRebuild } from "./workspace/fileIndex";
 import { matchFiles } from "./workspace/matchFiles";
+import { pruneRecents, pushRecent } from "./workspace/recentFiles";
+
+const RECENT_KEY = "searchEverywhere.recentFiles";
 
 let current: vscode.WebviewPanel | undefined;
 let panelReady = false;
@@ -82,6 +85,11 @@ export function activate(context: vscode.ExtensionContext): void {
   }));
   watchRebuildFiles(context);
   watchWorkspaceFiles(context);
+  context.subscriptions.push(vscode.window.onDidChangeActiveTextEditor((editor) => {
+    const fsPath = editor?.document.uri.fsPath;
+    if (!fsPath || editor.document.isUntitled) return;
+    rememberOpened(fsPath);
+  }));
   void bootFileSearch(context);
   void boot();
 }
@@ -97,7 +105,18 @@ export function deactivate(): void {
 
 async function bootFileSearch(context: vscode.ExtensionContext): Promise<void> {
   fileSearch = await WasmFileSearch.load(path.join(context.extensionPath, "vendor", "wasm"), (message) => appendLog(message));
+  recentKeys = pruneRecents(context.workspaceState.get<string[]>(RECENT_KEY) ?? [], new Set());
+  fileSearch?.setRecents(recentKeys);
   scheduleFileIndex();
+}
+
+/** Records an opened editor as recent, when its file is in the index. */
+function rememberOpened(fsPath: string): void {
+  const key = keyForPath(fsPath);
+  if (!key) return;
+  recentKeys = pushRecent(recentKeys, key);
+  fileSearch?.setRecents(recentKeys);
+  void extensionContext?.workspaceState.update(RECENT_KEY, recentKeys);
 }
 
 async function boot(): Promise<void> {
@@ -184,6 +203,12 @@ async function rebuildFileIndex(): Promise<void> {
   pendingUpserts.clear();
   pendingDeletes.clear();
   fileSearch?.setFiles(fileEntries);
+  const pruned = pruneRecents(recentKeys, new Set(fileEntries.map((entry) => entry.key)));
+  if (pruned.length !== recentKeys.length) {
+    recentKeys = pruned;
+    void extensionContext?.workspaceState.update(RECENT_KEY, recentKeys);
+  }
+  fileSearch?.setRecents(recentKeys);
 }
 
 async function flushFileDeltas(): Promise<void> {
@@ -658,6 +683,7 @@ async function openHit(id: string): Promise<void> {
     if (plan.type === "workspace") {
       const document = await vscode.workspace.openTextDocument(vscode.Uri.parse(plan.uri));
       await showDocument(document, plan.line);
+      rememberOpened(vscode.Uri.parse(plan.uri).fsPath);
       return;
     }
     const jarPath = plan.jarPath;
