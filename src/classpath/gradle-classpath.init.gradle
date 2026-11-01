@@ -1,0 +1,20 @@
+gradle.projectsEvaluated {
+    rootProject.allprojects { project ->
+        ["compileClasspath", "runtimeClasspath", "testCompileClasspath"].each { name ->
+            def configuration = project.configurations.findByName(name)
+            if (configuration != null && configuration.isCanBeResolved()) {
+                try {
+                    configuration.incoming.artifactView({ view ->
+                        view.lenient(true)
+                    }).files.each { file ->
+                        if (file.name.endsWith(".jar")) {
+                            println("JAR\t" + file.absolutePath)
+                        }
+                    }
+                } catch (Exception error) {
+                    println("ERR\t" + project.path + "\t" + name + "\t" + error.message)
+                }
+            }
+        }
+    }
+}
