@@ -9,6 +9,7 @@ test("exclude patterns become ripgrep globs", () => {
 
 test("content args require every term and the extension glob", () => {
   const args = contentRgArgs({ terms: ["User", "Service"], extensions: [".java"] }, ["!**/target"]);
+  assert.ok(args.includes("--pcre2"));
   assert.ok(args.includes("-i"));
   assert.ok(args.includes("*.java"));
   assert.ok(args.includes("(?=.*User)(?=.*Service).*"));

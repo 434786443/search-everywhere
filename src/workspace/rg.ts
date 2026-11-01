@@ -32,7 +32,7 @@ export function contentRgArgs(query: SearchQuery, excludeGlobs: string[]): strin
     ...excludeGlobs.flatMap(glob => ["--glob", glob]),
     ...query.extensions.flatMap(extension => ["--glob", `*${extension}`]),
   ];
-  return ["-n", "-i", "--no-heading", "--glob", "!.git/**", ...globs, pattern];
+  return ["--pcre2", "-n", "-i", "--no-heading", "--glob", "!.git/**", ...globs, pattern];
 }
 
 export function fileRgArgs(excludeGlobs: string[]): string[] {
