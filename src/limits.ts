@@ -5,4 +5,7 @@ export const REBUILD_DEBOUNCE_MS = 1000;
 export const RESOLVE_TIMEOUT_MS = 180000;
 export const FILE_TEXT_CAP = 1048576;
 export const JAR_TEXT_CAP = 52428800;
+export const RECENT_LIMIT = 50;
+export const FILE_INDEX_DEBOUNCE_MS = 300;
+export const FILE_BATCH_LIMIT = 50;
 export const EMPTY_HINT = "输入关键词，用 .java 或 *.java,*.xml 按后缀过滤。";
