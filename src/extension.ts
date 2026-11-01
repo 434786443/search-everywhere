@@ -14,7 +14,7 @@ import { matchFiles } from "./workspace/matchFiles";
 
 let current: vscode.WebviewPanel | undefined;
 let generation = 0;
-let latestRequestId = 0;
+let postedContentGeneration: number | undefined;
 let contentTimer: NodeJS.Timeout | undefined;
 
 export function activate(context: vscode.ExtensionContext): void {
@@ -42,26 +42,31 @@ function openPanel(context: vscode.ExtensionContext): void {
 function schedule(text: string, tab: SearchTab): void {
   const currentGeneration = ++generation;
   if (contentTimer) clearTimeout(contentTimer);
-  void publish(text, tab, currentGeneration, false, ++latestRequestId);
+  void publish(text, tab, currentGeneration, false);
   contentTimer = setTimeout(() => {
-    void publish(text, tab, currentGeneration, true, ++latestRequestId);
+    void publish(text, tab, currentGeneration, true);
   }, CONTENT_DEBOUNCE_MS);
 }
 
-function currentDecision(requestId: number, requestGeneration: number) {
+function currentDecision(requestGeneration: number, includeContent: boolean) {
   return shouldPublish({
-    requestId,
-    latestRequestId,
     generation: requestGeneration,
     currentGeneration: generation,
+    includeContent,
+    contentPosted: postedContentGeneration === requestGeneration,
   });
 }
 
-async function publish(text: string, tab: SearchTab, currentGeneration: number, includeContent: boolean, requestId: number): Promise<void> {
+function noteContentPosted(includeContent: boolean, requestGeneration: number): void {
+  if (includeContent) postedContentGeneration = requestGeneration;
+}
+
+async function publish(text: string, tab: SearchTab, currentGeneration: number, includeContent: boolean): Promise<void> {
   const query = parseQuery(text);
   if (query.terms.length === 0 && query.extensions.length === 0) {
-    if (currentDecision(requestId, currentGeneration)) {
+    if (currentDecision(currentGeneration, includeContent)) {
       post({ groups: [], status: workspaceStatus(), hint: EMPTY_HINT });
+      noteContentPosted(includeContent, currentGeneration);
     }
     return;
   }
@@ -74,9 +79,10 @@ async function publish(text: string, tab: SearchTab, currentGeneration: number, 
       content: { search: (value) => searchContent(value) },
     },
   });
-  if (result.stale || !currentDecision(requestId, currentGeneration)) return;
+  if (result.stale || !currentDecision(currentGeneration, includeContent)) return;
   remember(result);
   post(toPayload(result, tab));
+  noteContentPosted(includeContent, currentGeneration);
 }
 
 function post(payload: unknown): void {
