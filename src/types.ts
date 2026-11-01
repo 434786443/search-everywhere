@@ -27,3 +27,7 @@ export interface SearchHit {
   stableIndex: number;
   entry?: string;
 }
+
+export interface SearchProvider {
+  search(query: SearchQuery): Promise<SearchHit[]>;
+}
