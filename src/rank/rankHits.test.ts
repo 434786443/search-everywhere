@@ -69,6 +69,14 @@ test("multiple terms have no exact tier", () => {
   assert.deepEqual(ranked.map(item => item.id), ["joined", "loose"]);
 });
 
+test("content terms must occur on the same preview line", () => {
+  const ranked = rankHits([
+    hit({ id: "split", kind: "content", title: "Split.java", preview: "User\nService", stableIndex: 0 }),
+    hit({ id: "same", kind: "content", title: "Same.java", preview: "User Service", stableIndex: 1 }),
+  ], { terms: ["User", "Service"], extensions: [] });
+  assert.deepEqual(ranked.map(item => item.id), ["same"]);
+});
+
 test("uppercase pattern matches camel humps only", () => {
   const ranked = rankHits([
     hit({ id: "lowercase", kind: "file", title: "userservice.java" }),

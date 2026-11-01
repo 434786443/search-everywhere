@@ -37,21 +37,31 @@ export async function coordinate(input: CoordinateInput): Promise<GroupedResults
   const wantSymbols = tab === "all" || tab === "symbols";
   const wantCommands = (tab === "all" || tab === "commands") && query.extensions.length === 0 && query.terms.length > 0;
   const wantContent = input.includeContent && query.terms.length > 0 && (tab === "all" || tab === "files");
-  const filesPromise = wantFiles ? input.providers.files.search(query) : Promise.resolve([]);
-  const symbolsPromise = wantSymbols ? input.providers.symbols.search(query) : Promise.resolve([]);
-  const commandsPromise = wantCommands ? input.providers.commands.search(query) : Promise.resolve([]);
   let contentFailed = false;
-  let contentPromise: Promise<SearchHit[]> = Promise.resolve([]);
-  if (wantContent) {
+
+  const start = (
+    provider: SearchProvider,
+    wanted: boolean,
+    onFailure?: () => void,
+  ): Promise<SearchHit[]> => {
+    if (!wanted) return Promise.resolve([]);
     try {
-      contentPromise = input.providers.content.search(query).catch(() => {
-        contentFailed = true;
+      return Promise.resolve(provider.search(query)).catch(() => {
+        onFailure?.();
         return [];
       });
     } catch {
-      contentFailed = true;
+      onFailure?.();
+      return Promise.resolve([]);
     }
-  }
+  };
+
+  const filesPromise = start(input.providers.files, wantFiles);
+  const symbolsPromise = start(input.providers.symbols, wantSymbols);
+  const commandsPromise = start(input.providers.commands, wantCommands);
+  const contentPromise = start(input.providers.content, wantContent, () => {
+    contentFailed = true;
+  });
   const [files, symbols, commands, content] = await Promise.all([
     filesPromise,
     symbolsPromise,

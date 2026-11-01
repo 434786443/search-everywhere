@@ -106,10 +106,10 @@ export function rankHits(hits: SearchHit[], query: SearchQuery): SearchHit[] {
     .filter(hit => matchesExtension(hit, query.extensions))
     .map(hit => {
       if (hit.kind === "content") {
-        const preview = (hit.preview ?? "").toLowerCase();
+        const previewLines = (hit.preview ?? "").toLowerCase().split(/\r\n?|\n/);
         return {
           hit,
-          score: terms.every(term => preview.includes(term.toLowerCase()))
+          score: previewLines.some(line => terms.every(term => line.includes(term.toLowerCase())))
             ? { degree: 0, hasNameMatch: false }
             : undefined,
         };

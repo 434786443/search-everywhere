@@ -68,6 +68,35 @@ test("synchronous content failure keeps file hits", async () => {
   assert.deepEqual(result.files.hits.map(item => item.id), ["1"]);
 });
 
+test("synchronous file failure still starts content", async () => {
+  let contentCalled = false;
+  const files: SearchProvider = { search: () => { throw new Error("sync"); } };
+  const contentHit: SearchHit = {
+    id: "content",
+    kind: "content",
+    title: "F.java",
+    detail: "src/F.java",
+    source: { type: "workspace" },
+    extension: ".java",
+    preview: "F",
+    stableIndex: 0,
+  };
+  const content: SearchProvider = {
+    search: async () => {
+      contentCalled = true;
+      return [contentHit];
+    },
+  };
+  const result = await coordinate({
+    query, tab: "all", includeContent: true, isStale: () => false,
+    providers: { files, symbols: provider([]), commands: provider([]), content },
+  });
+  assert.equal(contentCalled, true);
+  assert.equal(result.contentFailed, false);
+  assert.deepEqual(result.content.hits.map(item => item.id), ["content"]);
+  assert.equal(result.files.hits.length, 0);
+});
+
 test("content starts while file search is pending", async () => {
   let releaseFiles!: (hits: SearchHit[]) => void;
   const filesPending = new Promise<SearchHit[]>(resolve => { releaseFiles = resolve; });
