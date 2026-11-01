@@ -7,7 +7,6 @@
   "categories": ["Other"],
   "activationEvents": ["onStartupFinished", "onCommand:searchEverywhere.show"],
   "main": "./out/extension.js",
-  "files": ["out", "media", "vendor", "src/classpath/gradle-classpath.init.gradle", "package.json", "README.md"],
   "contributes": {
     "commands": [
       { "command": "searchEverywhere.show", "title": "Search Everywhere: 搜索" },

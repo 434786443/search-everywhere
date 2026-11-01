@@ -1,0 +1,16 @@
+# Sources are not shipped; `out/` holds the compiled extension.
+src/**
+!src/classpath/gradle-classpath.init.gradle
+
+# Tests, tooling and docs stay out of the vsix.
+out/**/*.test.js
+out/**/*.test.js.map
+scripts/**
+docs/**
+.vscode/**
+.superpowers/**
+tsconfig.json
+package-lock.json
+
+# Keep node_modules: @vscode/ripgrep ships the platform rg binary at runtime.
+!node_modules/**
