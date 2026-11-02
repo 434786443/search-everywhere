@@ -66,18 +66,23 @@
         row.className = "hit";
         row.dataset.index = String(index);
         const truncated = hit.textTruncated ? " 文本不完整" : "";
-        const title = document.createElement("div");
+        const head = document.createElement("div");
+        head.className = "hit-head";
+        if (hit.badge) head.append(badgeElement(hit.badge));
+        const title = document.createElement("span");
+        title.className = "hit-title";
         fillHighlighted(title, hit.title, hit.titleRanges);
         if (truncated) title.append(truncated);
+        head.append(title);
         const meta = document.createElement("div");
         meta.className = "meta";
-        meta.append(`${hit.sourceLabel} `);
+        if (hit.sourceLabel) meta.append(`${hit.sourceLabel} `);
         fillHighlighted(meta, hit.detail, hit.detailRanges);
         if (hit.preview) {
           meta.append(`:${hit.line} `);
           fillHighlighted(meta, hit.preview, hit.previewRanges);
         }
-        row.append(title, meta);
+        row.append(head, meta);
         row.addEventListener("click", () => vscode.postMessage({ type: "open", id: hit.id }));
         results.appendChild(row);
       }
@@ -91,6 +96,16 @@
     selected = 0;
     paint();
   });
+
+  function badgeElement(badge) {
+    const span = document.createElement("span");
+    span.className = "badge";
+    span.textContent = badge.text;
+    span.style.color = badge.color;
+    // Fewer characters earn a wider glyph: a lone letter can afford a bigger cap height.
+    span.classList.add(badge.text.length <= 1 ? "badge-one" : badge.text.length === 2 ? "badge-two" : "badge-three");
+    return span;
+  }
 
   function fillHighlighted(parent, text, ranges) {
     const marks = Array.isArray(ranges) ? ranges : [];

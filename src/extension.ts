@@ -13,6 +13,7 @@ import { readPersistedJars, writePersistedJars } from "./jar/persistIndex";
 import { classEntryToSourceEntry } from "./jar/sourcePath";
 import { ALL_GROUP_CAP, CONTENT_DEBOUNCE_MS, EMPTY_HINT, FILE_INDEX_DEBOUNCE_MS, FILE_TEXT_CAP, JAR_TEXT_CAP, REBUILD_DEBOUNCE_MS, TAB_CAP } from "./limits";
 import { decideOpen } from "./open/decideOpen";
+import { COMMAND_BADGE, FileBadge, fileBadge } from "./panel/fileBadge";
 import { createPanelNonce, panelHtml } from "./panel/panelHtml";
 import { FileQueryInput, parseFileQuery } from "./query/fileQuery";
 import { highlightRanges } from "./rank/rankHits";
@@ -645,7 +646,9 @@ function toPayload(result: GroupedResults, tab: SearchTab, terms: string[]) {
         id: hit.id,
         title: hit.title,
         detail: hit.detail,
-        sourceLabel: hit.source.type === "workspace" ? "工作区" : hit.source.jarName ?? "JAR",
+        // Workspace results need no origin label; the file path is the origin.
+        sourceLabel: hit.source.type === "jar" ? hit.source.jarName ?? "JAR" : "",
+        badge: badgeFor(hit),
         preview: hit.preview ?? "",
         line: hit.line ?? 0,
         textTruncated: Boolean(hit.textTruncated),
@@ -656,6 +659,11 @@ function toPayload(result: GroupedResults, tab: SearchTab, terms: string[]) {
     };
   });
   return { groups, status: workspaceStatus(), hint: EMPTY_HINT };
+}
+
+function badgeFor(hit: SearchHit): FileBadge | undefined {
+  if (hit.kind === "command") return COMMAND_BADGE;
+  return fileBadge(hit.extension);
 }
 
 async function openHit(id: string): Promise<void> {
